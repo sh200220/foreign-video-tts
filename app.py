@@ -75,6 +75,14 @@ INIT_FMT = _s.get("fmt") if _s.get("fmt") in FORMAT_LABELS else "WAV"
 INIT_FOLDER = _s.get("folder") or DEFAULT_OUTPUT
 INIT_MIX = bool(_s.get("mix_on", False))
 INIT_TS = bool(_s.get("add_ts", False))
+INIT_SRT = bool(_s.get("srt_on", False))
+INIT_NORM = bool(_s.get("normalize_on", False))
+try:
+    INIT_GAP = float(_s.get("gap_sec", 0.0))
+except (TypeError, ValueError):
+    INIT_GAP = 0.0
+INIT_GAP = INIT_GAP if 0.0 <= INIT_GAP <= 2.0 else 0.0
+INIT_REPLACE = _s.get("replace_rules", "") or ""
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -188,14 +196,26 @@ def update_stats(text, lang_label, speed):
     return f"글자 수 {n:,} · 예상 길이 약 {sec:.0f}초 (대략)"
 
 
-def generate(lang_label, voice, speed, text, files, filename, folder,
-             fmt, mix_on, voice2, mix_ratio, add_ts):
+def apply_replacements(text, rules):
+    """'원문=읽을말' 줄 단위 치환을 TTS 전에 적용 (발음 교정)."""
+    for line in (rules or "").splitlines():
+        if "=" in line:
+            a, b = line.split("=", 1)
+            if a.strip():
+                text = text.replace(a.strip(), b.strip())
+    return text
+
+
+def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
+             add_ts, srt_on, gap_sec, normalize_on, replace_rules, progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
 
     # 마지막 선택을 기억(다음 실행 때 복원)
     save_settings({"lang": lang_label, "voice": voice, "voice2": voice2, "speed": speed,
-                   "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts)})
+                   "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts),
+                   "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0),
+                   "normalize_on": bool(normalize_on), "replace_rules": replace_rules or ""})
 
     try:
         voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
@@ -207,19 +227,30 @@ def generate(lang_label, voice, speed, text, files, filename, folder,
     def named(base):
         return f"{base}_{stamp}" if add_ts else base
 
+    def synth_one(content):
+        audio, sr, segs = core.synthesize_segments(
+            apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0)
+        if normalize_on:
+            audio = core.normalize_peak(audio)
+        return audio, sr, segs
+
     if files:  # --- 배치: 업로드한 .txt 파일마다 1개씩 (파일 이름으로 저장) ---
         saved, skipped = [], []
-        for f in files:
+        total = len(files)
+        for i, f in enumerate(files):
+            progress(i / total, desc=f"{i + 1}/{total} 생성 중…")
             try:
-                content = Path(f).read_text(encoding="utf-8")
-                audio, sr = core.synthesize(content, code, voice_arg, speed)
+                audio, sr, segs = synth_one(Path(f).read_text(encoding="utf-8"))
                 p = core.save_audio(audio, sr, out_folder, named(Path(f).stem), fmt)
+                if srt_on:
+                    core.write_srt(segs, p.with_suffix(".srt"))
                 saved.append(p)
             except Exception as e:  # 한 파일이 실패해도 나머지는 계속 (tts.py 와 동일한 회복성)
                 skipped.append(f"{Path(f).name} ({e})")
+        progress(1.0)
         if not saved:
             raise gr.Error("생성된 파일이 없습니다. " + (" / ".join(skipped) if skipped else ""))
-        msg = f"{len(saved)}개 저장 완료"
+        msg = f"{len(saved)}개 저장 완료" + (" (자막 포함)" if srt_on else "")
         if skipped:
             msg += f" · {len(skipped)}개 건너뜀"
         shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p in saved[:8])
@@ -229,14 +260,19 @@ def generate(lang_label, voice, speed, text, files, filename, folder,
         return str(saved[0]), status
 
     # --- 단일: 대본 텍스트로 1개 ---
+    progress(0.3, desc="생성 중…")
     try:
-        audio, sr = core.synthesize(text, code, voice_arg, speed)
+        audio, sr, segs = synth_one(text)
     except ValueError as e:
         raise gr.Error(str(e))
     path = core.save_audio(audio, sr, out_folder, named(filename), fmt)
+    if srt_on:
+        core.write_srt(segs, path.with_suffix(".srt"))
+    progress(1.0)
     dur = len(audio) / sr
+    extra = " · 자막(.srt) 포함" if srt_on else ""
     # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
-    status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초</div>'
+    status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초{extra}</div>'
     return str(path), status
 
 
@@ -316,12 +352,21 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                         "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
             upload = gr.File(file_count="multiple", file_types=[".txt"], elem_classes="upload",
                              label="텍스트 파일(.txt) — 여러 개 선택 가능")
+        with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 (선택)", open=False):
+            replace_rules = gr.Textbox(value=INIT_REPLACE, lines=3,
+                                       label="발음 교정 (한 줄에 하나: 원문=읽을말)",
+                                       placeholder="예) AI=에이아이\n예) 2024=이천이십사년")
+            gap_sec = gr.Slider(0.0, 2.0, value=INIT_GAP, step=0.1, label="문단(줄) 사이 쉼",
+                                info="줄바꿈마다 넣을 무음 길이(초). 0 = 없음")
 
     with gr.Group(elem_classes="card"):
         with gr.Row():
             filename = gr.Textbox(value="narration", label="파일 이름 (확장자 자동)")
             fmt = gr.Dropdown(FORMAT_LABELS, value=INIT_FMT, label="포맷 (WAV = 편집용 / MP3 = 공유)")
         add_ts = gr.Checkbox(value=INIT_TS, label="파일 이름에 날짜·시간 자동 추가 (덮어쓰기 방지)")
+        with gr.Row():
+            srt_on = gr.Checkbox(value=INIT_SRT, label="자막(.srt)도 같이 저장")
+            normalize_on = gr.Checkbox(value=INIT_NORM, label="음량 맞추기 (피크 기준)")
         folder = gr.Textbox(value=INIT_FOLDER, label="저장 폴더",
                             info="아래 버튼으로 고르거나, 경로를 직접 입력해도 됩니다.")
         with gr.Row(elem_classes="folder-tools"):
@@ -348,8 +393,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     default_btn.click(lambda: DEFAULT_OUTPUT, outputs=folder)
     open_btn.click(open_folder, inputs=folder, outputs=[])
     btn.click(generate,
-              inputs=[lang, voice, speed, text, upload, filename, folder,
-                      fmt, mix_on, voice2, mix_ratio, add_ts],
+              inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
+                      mix_ratio, add_ts, srt_on, gap_sec, normalize_on, replace_rules],
               outputs=[audio_out, status])
 
 

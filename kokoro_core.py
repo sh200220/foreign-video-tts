@@ -68,6 +68,58 @@ def synthesize(text, lang_code, voice, speed=1.0):
     return np.concatenate(chunks), SAMPLE_RATE
 
 
+def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0):
+    """텍스트 -> (audio_np, sample_rate, segments).
+
+    segments = [(자막텍스트, 시작초, 끝초)] (줄 단위, 자막/srt 용).
+    gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
+    gap_sec=0 이면 synthesize() 와 동일한 오디오."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
+    pipe = get_pipeline(lang_code)
+    gap_len = int(SAMPLE_RATE * max(0.0, gap_sec))
+    gap = np.zeros(gap_len, dtype=np.float32) if gap_len > 0 else None
+    parts, segments, cursor = [], [], 0.0
+    for r in pipe(text, voice=voice, speed=speed, split_pattern=r"\n+"):
+        if parts and gap is not None:           # 첫 세그먼트 앞엔 무음 없음
+            parts.append(gap)
+            cursor += gap_sec
+        chunk = _to_numpy(r[2]).astype(np.float32)
+        start = cursor
+        parts.append(chunk)
+        cursor += len(chunk) / SAMPLE_RATE
+        seg_text = (r[0] or "").strip()
+        if seg_text:
+            segments.append((seg_text, start, cursor))
+    if not parts:
+        raise RuntimeError("오디오가 생성되지 않았습니다.")
+    return np.concatenate(parts), SAMPLE_RATE, segments
+
+
+def normalize_peak(audio, peak=0.97):
+    """피크(최대 진폭)를 peak 로 맞춰 클립 간 음량을 비슷하게. (지각 음량 아님)"""
+    m = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    return (audio / m * peak).astype("float32") if m > 0 else audio
+
+
+def _srt_time(t):
+    ms = int(round(t * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def write_srt(segments, path):
+    """segments 를 SRT 자막 파일로 path 에 저장하고 Path 반환."""
+    path = Path(path)
+    blocks = [f"{i}\n{_srt_time(s)} --> {_srt_time(e)}\n{t}\n"
+              for i, (t, s, e) in enumerate(segments, 1)]
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return path
+
+
 # --- 목소리 믹스(blend) ---
 
 def blend_style(style_a, style_b, ratio):
