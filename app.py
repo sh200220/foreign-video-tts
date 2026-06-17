@@ -29,6 +29,13 @@ FORMAT_LABELS = list(core.FORMATS.keys())
 # 실측 기반 대략치 (chars/sec, 속도 1.0): 영어 13.6 / 일본어 5.6
 CPS = {"a": 13.6, "b": 13.6, "j": 5.6}
 
+# 목소리 미리듣기용 짧은 샘플 문장 (언어별)
+PREVIEW_TEXT = {
+    "a": "This is a preview of the selected voice.",
+    "b": "This is a preview of the selected voice.",
+    "j": "これは、選んだ声のプレビューです。",
+}
+
 SETTINGS_PATH = Path.home() / ".foreign-video-tts.json"
 
 
@@ -229,6 +236,18 @@ def generate(lang_label, voice, speed, text, files, filename, folder,
     return str(path), status
 
 
+def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio):
+    """선택한 목소리(또는 믹스)로 짧은 샘플을 합성해 메모리로 재생. 파일은 저장하지 않음."""
+    code = core.LANGS[lang_label]["code"]
+    try:
+        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
+        audio, sr = core.synthesize(PREVIEW_TEXT.get(code, PREVIEW_TEXT["a"]), code, voice_arg, speed)
+    except ValueError as e:
+        raise gr.Error(str(e))
+    # gr.Audio(type="numpy") 는 (sample_rate, 데이터) 튜플을 받음. int16 로 안전하게 변환.
+    return sr, (audio * 32767).clip(-32768, 32767).astype("int16")
+
+
 # --- 저장 폴더 고르기/열기 (로컬 앱이므로 OS 기능 사용) ---
 
 def pick_folder(current):
@@ -278,6 +297,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             voice2 = gr.Dropdown(INIT_VOICES, value=INIT_VOICE2, label="목소리 2")
             mix_ratio = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="섞는 비율",
                                   info="왼쪽 = 목소리 1 · 오른쪽 = 목소리 2")
+        preview_btn = gr.Button("미리듣기", size="sm")
+        preview_audio = gr.Audio(label="미리듣기 (선택한 목소리 샘플)", type="numpy",
+                                 autoplay=True, elem_classes="audio-out")
 
     with gr.Group(elem_classes="card"):
         text = gr.Textbox(lines=6, label="대본",
@@ -313,6 +335,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     mix_on.change(lambda on: gr.update(visible=on), inputs=mix_on, outputs=mix_row)
+    preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio], outputs=preview_audio)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
     desktop_btn.click(lambda: str(Path.home() / "Desktop"), outputs=folder)
     downloads_btn.click(lambda: str(Path.home() / "Downloads"), outputs=folder)
