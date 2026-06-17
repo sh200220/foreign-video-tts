@@ -1,0 +1,5 @@
+# Kokoro TTS 워크플로우 의존성 (CPU 동작, 상업적 사용 가능 라이선스)
+kokoro
+soundfile
+misaki[ja]
+numpy

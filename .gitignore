@@ -1,0 +1,15 @@
+# 가상환경
+.venv/
+venv/
+
+# Python 캐시
+__pycache__/
+*.pyc
+
+# 생성된 음성(용량 큼) — 폴더는 유지(.gitkeep), 오디오 파일만 제외
+output/**/*.wav
+output/**/*.mp3
+output/**/*.flac
+
+# 모델/HF 캐시가 로컬에 떨어질 경우
+.cache/
