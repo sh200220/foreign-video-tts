@@ -130,7 +130,8 @@ footer{display:none!important;}
 
 /* 글자 수/예상 길이 — 작고 옅게, 카드에 자연스럽게 (Gradio styler 회색 배경 제거) */
 .stats{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;min-height:0!important;}
-.styler:has(.stats){background:transparent!important;}
+/* Gradio 그룹 styler 의 회색 배경 제거 — 카드(흰색)가 비치게. 작은 버튼/짧은 텍스트 뒤 회색 막대 방지 */
+.gradio-container .styler{background:transparent!important;}
 .stats p{margin:4px 2px 0!important;color:#8595a1!important;font-size:12.5px!important;font-weight:500!important;letter-spacing:-.01em;}
 .hint p{margin:0 0 8px!important;color:#5b6b78!important;font-size:12.5px!important;line-height:1.6;}
 
@@ -153,6 +154,9 @@ footer{display:none!important;}
 
 .folder-tools{gap:8px!important;}
 .folder-tools button{font-weight:600!important;}
+.preview-btn{flex:0 0 auto!important;}
+/* 미리듣기 플레이어 테두리를 결과 플레이어와 동일한 연회색으로 (autoplay 의 검은 테두리 제거) */
+.preview-audio{border:1px solid #e4ebf1!important;outline:none!important;}
 
 .gradio-container input:focus,.gradio-container textarea:focus,.gradio-container select:focus{
   border-color:#00aaff!important;box-shadow:0 0 0 3px rgba(0,170,255,.16)!important;}
@@ -297,9 +301,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             voice2 = gr.Dropdown(INIT_VOICES, value=INIT_VOICE2, label="목소리 2")
             mix_ratio = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="섞는 비율",
                                   info="왼쪽 = 목소리 1 · 오른쪽 = 목소리 2")
-        preview_btn = gr.Button("미리듣기", size="sm")
+        with gr.Row():
+            preview_btn = gr.Button("미리듣기", size="sm", scale=0, min_width=120,
+                                    elem_classes="preview-btn")
         preview_audio = gr.Audio(label="미리듣기 (선택한 목소리 샘플)", type="numpy",
-                                 autoplay=True, elem_classes="audio-out")
+                                 autoplay=True, elem_classes=["audio-out", "preview-audio"])
 
     with gr.Group(elem_classes="card"):
         text = gr.Textbox(lines=6, label="대본",
