@@ -1,8 +1,8 @@
 """
 외국어 영상 TTS — 웹 UI (Gradio)
 =================================
-브라우저에서 언어·목소리·속도를 고르고 대본을 넣으면 음성을 만들어
-원하는 폴더에 원하는 이름·포맷(WAV/MP3/FLAC/OGG)으로 저장한다.
+브라우저에서 언어·목소리·속도를 고르고 대본(또는 .txt 파일 여러 개)을 넣으면
+음성을 만들어 원하는 폴더에 원하는 이름·포맷(WAV/MP3/FLAC/OGG)으로 저장한다.
 목소리 두 개를 비율로 섞을 수도 있다. (음성 생성은 kokoro_core 공유)
 
 디자인: Pretendard 글꼴 + azure(#00aaff) 액센트.
@@ -10,9 +10,11 @@
 """
 
 import html
+import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
@@ -22,9 +24,50 @@ import kokoro_core as core
 DEFAULT_OUTPUT = str((Path(__file__).resolve().parent / "output").resolve())
 LANG_LABELS = list(core.LANGS.keys())
 FIRST_LANG = LANG_LABELS[0]
-FIRST_CODE = core.LANGS[FIRST_LANG]["code"]
-FIRST_VOICES = core.voices_for(FIRST_CODE)
 FORMAT_LABELS = list(core.FORMATS.keys())
+
+# 실측 기반 대략치 (chars/sec, 속도 1.0): 영어 13.6 / 일본어 5.6
+CPS = {"a": 13.6, "b": 13.6, "j": 5.6}
+
+SETTINGS_PATH = Path.home() / ".foreign-video-tts.json"
+
+
+def load_settings():
+    try:
+        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_settings(data):
+    try:
+        SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _second_voice(voices):
+    """기본 '목소리 2'는 '목소리 1' 기본값과 겹치지 않게 두 번째 항목으로."""
+    return voices[1] if len(voices) > 1 else voices[0]
+
+
+# --- 저장된 설정을 불러와 '검증된' 초기값 계산 (잘못된 값이면 기본값으로 폴백) ---
+_s = load_settings()
+INIT_LANG = _s.get("lang") if _s.get("lang") in LANG_LABELS else FIRST_LANG
+_init_code = core.LANGS[INIT_LANG]["code"]
+INIT_VOICES = core.voices_for(_init_code)
+_def_voice = core.LANGS[INIT_LANG]["default_voice"]
+INIT_VOICE = _s.get("voice") if _s.get("voice") in INIT_VOICES else _def_voice
+INIT_VOICE2 = _s.get("voice2") if _s.get("voice2") in INIT_VOICES else _second_voice(INIT_VOICES)
+try:
+    INIT_SPEED = float(_s.get("speed", 1.0))
+except (TypeError, ValueError):
+    INIT_SPEED = 1.0
+INIT_SPEED = INIT_SPEED if 0.5 <= INIT_SPEED <= 2.0 else 1.0
+INIT_FMT = _s.get("fmt") if _s.get("fmt") in FORMAT_LABELS else "WAV"
+INIT_FOLDER = _s.get("folder") or DEFAULT_OUTPUT
+INIT_MIX = bool(_s.get("mix_on", False))
+INIT_TS = bool(_s.get("add_ts", False))
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -41,6 +84,9 @@ HEADER_HTML = """
 """
 
 CSS = """
+/* 배경: 화면 전체를 mist 색으로 (좌우 흰 여백 제거) */
+html,body,gradio-app,.gradio-container{background:#f4f8fb!important;}
+
 .gradio-container{
   --primary-50:#e9f7ff;--primary-100:#d3efff;--primary-200:#a6dfff;--primary-300:#79ceff;
   --primary-400:#4cbdff;--primary-500:#00aaff;--primary-600:#0098e5;--primary-700:#0086cc;
@@ -57,9 +103,9 @@ CSS = """
   --button-primary-background-fill:#00aaff;--button-primary-background-fill-hover:#0098e5;
   --button-primary-text-color:#ffffff;--button-primary-border-color:#00aaff;
   --font:'Pretendard','Apple SD Gothic Neo',system-ui,-apple-system,sans-serif;
-  max-width:860px!important;margin:0 auto!important;padding:0 20px 56px!important;background:#f4f8fb;
+  max-width:860px!important;margin:0 auto!important;padding:0 20px 56px!important;
 }
-body,.gradio-container{font-family:'Pretendard','Apple SD Gothic Neo',system-ui,-apple-system,sans-serif!important;background:#f4f8fb;}
+body,.gradio-container{font-family:'Pretendard','Apple SD Gothic Neo',system-ui,-apple-system,sans-serif!important;}
 footer{display:none!important;}
 
 .app-head{padding:42px 4px 20px;}
@@ -75,6 +121,12 @@ footer{display:none!important;}
 
 .gradio-container label span{font-weight:600!important;color:#33454f!important;letter-spacing:-.01em;}
 
+/* 글자 수/예상 길이 — 작고 옅게, 카드에 자연스럽게 (Gradio styler 회색 배경 제거) */
+.stats{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;min-height:0!important;}
+.styler:has(.stats){background:transparent!important;}
+.stats p{margin:4px 2px 0!important;color:#8595a1!important;font-size:12.5px!important;font-weight:500!important;letter-spacing:-.01em;}
+.hint p{margin:0 0 8px!important;color:#5b6b78!important;font-size:12.5px!important;line-height:1.6;}
+
 .generate-btn button,button.generate-btn{
   font-size:16px!important;font-weight:700!important;letter-spacing:-.01em;
   padding:15px 20px!important;border-radius:12px!important;
@@ -89,6 +141,11 @@ footer{display:none!important;}
   background:#e9f7ff;border:1px solid #bfe8ff;border-radius:11px;padding:10px 14px;font-size:14px;letter-spacing:-.01em;}
 .status-ok::before{content:"";width:8px;height:8px;border-radius:50%;background:#00aaff;box-shadow:0 0 0 4px rgba(0,170,255,.18);}
 .status-ok code{background:#fff;border:1px solid #d6e6f2;border-radius:6px;padding:2px 8px;color:#0086cc;font-size:13px;}
+.stat-list{margin-top:9px;color:#5b6b78;font-size:12.5px;line-height:1.8;}
+.stat-list code{background:#fff;border:1px solid #e0e8ef;border-radius:5px;padding:1px 6px;color:#0086cc;}
+
+.folder-tools{gap:8px!important;}
+.folder-tools button{font-weight:600!important;}
 
 .gradio-container input:focus,.gradio-container textarea:focus,.gradio-container select:focus{
   border-color:#00aaff!important;box-shadow:0 0 0 3px rgba(0,170,255,.16)!important;}
@@ -97,17 +154,8 @@ footer{display:none!important;}
 .audio-out label svg{display:none!important;}
 .audio-out .empty svg{display:none!important;}
 
-/* 폴더 빠른 선택/열기 버튼 */
-.folder-tools{gap:8px!important;}
-.folder-tools button{font-weight:600!important;}
-
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
 """
-
-
-def _second_voice(voices):
-    """기본 '목소리 2'는 '목소리 1' 기본값과 겹치지 않게 두 번째 항목으로."""
-    return voices[1] if len(voices) > 1 else voices[0]
 
 
 def on_lang_change(lang_label):
@@ -118,25 +166,63 @@ def on_lang_change(lang_label):
             gr.update(choices=voices, value=_second_voice(voices)))
 
 
-def generate(lang_label, voice, speed, text, uploaded_file, filename, folder,
-             fmt, mix_on, voice2, mix_ratio):
-    # 업로드한 .txt가 있으면 그것을, 없으면 텍스트박스 내용을 사용
-    content = text
-    if uploaded_file:
-        content = Path(uploaded_file).read_text(encoding="utf-8")
-
+def update_stats(text, lang_label, speed):
+    """대본 글자 수 + 대략적인 예상 길이(실측 chars/sec 기반)."""
+    n = len((text or "").strip())
+    if n == 0:
+        return "글자 수 0"
     code = core.LANGS[lang_label]["code"]
+    cps = CPS.get(code, 13.6) * (speed or 1.0)
+    sec = n / cps if cps else 0
+    return f"글자 수 {n:,} · 예상 길이 약 {sec:.0f}초 (대략)"
+
+
+def generate(lang_label, voice, speed, text, files, filename, folder,
+             fmt, mix_on, voice2, mix_ratio, add_ts):
+    code = core.LANGS[lang_label]["code"]
+    out_folder = folder or DEFAULT_OUTPUT
+
+    # 마지막 선택을 기억(다음 실행 때 복원)
+    save_settings({"lang": lang_label, "voice": voice, "voice2": voice2, "speed": speed,
+                   "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts)})
+
     try:
-        if mix_on:
-            # 슬라이더 0=완전 목소리1, 1=완전 목소리2 → ratio(목소리1 비중)=1-슬라이더
-            voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio)
-        else:
-            voice_arg = voice
-        audio, sr = core.synthesize(content, code, voice_arg, speed)
+        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
     except ValueError as e:
         raise gr.Error(str(e))
 
-    path = core.save_audio(audio, sr, folder or DEFAULT_OUTPUT, filename, fmt)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def named(base):
+        return f"{base}_{stamp}" if add_ts else base
+
+    if files:  # --- 배치: 업로드한 .txt 파일마다 1개씩 (파일 이름으로 저장) ---
+        saved, skipped = [], []
+        for f in files:
+            try:
+                content = Path(f).read_text(encoding="utf-8")
+                audio, sr = core.synthesize(content, code, voice_arg, speed)
+                p = core.save_audio(audio, sr, out_folder, named(Path(f).stem), fmt)
+                saved.append(p)
+            except Exception as e:  # 한 파일이 실패해도 나머지는 계속 (tts.py 와 동일한 회복성)
+                skipped.append(f"{Path(f).name} ({e})")
+        if not saved:
+            raise gr.Error("생성된 파일이 없습니다. " + (" / ".join(skipped) if skipped else ""))
+        msg = f"{len(saved)}개 저장 완료"
+        if skipped:
+            msg += f" · {len(skipped)}개 건너뜀"
+        shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p in saved[:8])
+        if len(saved) > 8:
+            shown += f"<br>… 외 {len(saved) - 8}개"
+        status = f'<div class="status-ok">{msg}</div><div class="stat-list">{shown}</div>'
+        return str(saved[0]), status
+
+    # --- 단일: 대본 텍스트로 1개 ---
+    try:
+        audio, sr = core.synthesize(text, code, voice_arg, speed)
+    except ValueError as e:
+        raise gr.Error(str(e))
+    path = core.save_audio(audio, sr, out_folder, named(filename), fmt)
     dur = len(audio) / sr
     # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
     status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초</div>'
@@ -146,10 +232,9 @@ def generate(lang_label, voice, speed, text, uploaded_file, filename, folder,
 # --- 저장 폴더 고르기/열기 (로컬 앱이므로 OS 기능 사용) ---
 
 def pick_folder(current):
-    """OS 네이티브 '폴더 선택' 창을 띄워 고른 경로를 반환. 취소하면 기존 값 유지.
+    """OS 네이티브 '폴더 선택' 창을 띄워 고른 경로를 반환. 취소/실패 시 기존 값 유지.
 
-    Tk 는 별도 프로세스(자체 main 스레드)에서 실행 → 맥/윈 모두 안전.
-    Tk 가 없는 환경이면 조용히 기존 값을 유지(아래 입력칸 직접 입력으로 폴백)."""
+    Tk 는 별도 프로세스(자체 main 스레드)에서 실행 → 맥/윈 모두 안전."""
     code = (
         "import tkinter as tk, sys\n"
         "from tkinter import filedialog\n"
@@ -185,27 +270,31 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
 
     with gr.Group(elem_classes="card"):
         with gr.Row():
-            lang = gr.Dropdown(LANG_LABELS, value=FIRST_LANG, label="언어")
-            voice = gr.Dropdown(FIRST_VOICES,
-                                value=core.LANGS[FIRST_LANG]["default_voice"], label="목소리")
-            speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="속도", info="1.0 = 보통")
-        mix_on = gr.Checkbox(value=False, label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
-        with gr.Row(visible=False) as mix_row:
-            voice2 = gr.Dropdown(FIRST_VOICES, value=_second_voice(FIRST_VOICES), label="목소리 2")
+            lang = gr.Dropdown(LANG_LABELS, value=INIT_LANG, label="언어")
+            voice = gr.Dropdown(INIT_VOICES, value=INIT_VOICE, label="목소리")
+            speed = gr.Slider(0.5, 2.0, value=INIT_SPEED, step=0.05, label="속도", info="1.0 = 보통")
+        mix_on = gr.Checkbox(value=INIT_MIX, label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
+        with gr.Row(visible=INIT_MIX) as mix_row:
+            voice2 = gr.Dropdown(INIT_VOICES, value=INIT_VOICE2, label="목소리 2")
             mix_ratio = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="섞는 비율",
                                   info="왼쪽 = 목소리 1 · 오른쪽 = 목소리 2")
 
     with gr.Group(elem_classes="card"):
         text = gr.Textbox(lines=6, label="대본",
                           placeholder="여기에 대본을 붙여넣으세요. 문장·문단마다 줄바꿈하면 더 자연스럽습니다.")
-        upload = gr.File(file_count="single", file_types=[".txt"], elem_classes="upload",
-                         label="또는 .txt 파일 업로드 (선택 — 업로드 시 위 대본 대신 사용)")
+        stats = gr.Markdown("글자 수 0", elem_classes="stats")
+        with gr.Accordion("파일로 만들기 — .txt 여러 개 올리면 한 번에 (선택)", open=False):
+            gr.Markdown("파일을 올리면 위 대본 대신 **각 파일 내용**으로 만들고, **각 파일 이름**으로 저장됩니다 "
+                        "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
+            upload = gr.File(file_count="multiple", file_types=[".txt"], elem_classes="upload",
+                             label="텍스트 파일(.txt) — 여러 개 선택 가능")
 
     with gr.Group(elem_classes="card"):
         with gr.Row():
             filename = gr.Textbox(value="narration", label="파일 이름 (확장자 자동)")
-            fmt = gr.Dropdown(FORMAT_LABELS, value="WAV", label="포맷 (WAV = 편집용 / MP3 = 공유)")
-        folder = gr.Textbox(value=DEFAULT_OUTPUT, label="저장 폴더",
+            fmt = gr.Dropdown(FORMAT_LABELS, value=INIT_FMT, label="포맷 (WAV = 편집용 / MP3 = 공유)")
+        add_ts = gr.Checkbox(value=INIT_TS, label="파일 이름에 날짜·시간 자동 추가 (덮어쓰기 방지)")
+        folder = gr.Textbox(value=INIT_FOLDER, label="저장 폴더",
                             info="아래 버튼으로 고르거나, 경로를 직접 입력해도 됩니다.")
         with gr.Row(elem_classes="folder-tools"):
             browse_btn = gr.Button("폴더 찾아보기…", size="sm")
@@ -220,6 +309,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         open_btn = gr.Button("저장 폴더 열기", size="sm")
 
     lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
+    lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
+    text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
+    speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     mix_on.change(lambda on: gr.update(visible=on), inputs=mix_on, outputs=mix_row)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
     desktop_btn.click(lambda: str(Path.home() / "Desktop"), outputs=folder)
@@ -228,7 +320,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     open_btn.click(open_folder, inputs=folder, outputs=[])
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder,
-                      fmt, mix_on, voice2, mix_ratio],
+                      fmt, mix_on, voice2, mix_ratio, add_ts],
               outputs=[audio_out, status])
 
 
