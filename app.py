@@ -9,6 +9,7 @@
 실행:  python app.py   (브라우저가 자동으로 열립니다)
 """
 
+import html
 from pathlib import Path
 
 import gradio as gr
@@ -132,7 +133,8 @@ def generate(lang_label, voice, speed, text, uploaded_file, filename, folder,
 
     path = core.save_audio(audio, sr, folder or DEFAULT_OUTPUT, filename, fmt)
     dur = len(audio) / sr
-    status = f'<div class="status-ok">저장 완료 · <code>{path}</code> · {dur:.1f}초</div>'
+    # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
+    status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초</div>'
     return str(path), status
 
 
