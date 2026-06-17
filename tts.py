@@ -18,6 +18,12 @@ import soundfile as sf
 
 import kokoro_core as core
 
+# 콘솔이 cp949(한국 윈도우)여도 한국어 출력이 깨지지 않도록 UTF-8 로 고정
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # 폴더명 -> (Kokoro lang_code, 기본 목소리)
 FOLDER_LANG = {
     "en": ("a", "af_heart"),   # 영어(미국)
@@ -44,12 +50,22 @@ def main():
                         help="목소리 강제 지정 (단일 언어일 때만). --lang all 과 함께 쓸 수 없음")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="말하기 속도 배율 (기본 1.0)")
+    parser.add_argument("--format", choices=["wav", "mp3", "flac", "ogg"], default="wav",
+                        help="출력 포맷 (기본: wav)")
+    parser.add_argument("--voice2", default=None,
+                        help="두 번째 목소리(믹스용, 단일 언어일 때만). 지정하면 --voice 와 섞음")
+    parser.add_argument("--mix", type=float, default=0.5,
+                        help="믹스 비율 = voice2 비중 0~1 (기본 0.5=균등). --voice2 와 함께 사용")
     args = parser.parse_args()
 
-    if args.voice and args.lang == "all":
-        print("[오류] --voice 는 언어별로 목소리가 달라 --lang en 또는 --lang ja 와 함께 쓰세요.")
+    if (args.voice or args.voice2) and args.lang == "all":
+        print("[오류] --voice/--voice2 는 언어별로 달라 --lang en 또는 --lang ja 와 함께 쓰세요.")
+        sys.exit(2)
+    if args.voice2 and not 0.0 <= args.mix <= 1.0:
+        print(f"[오류] --mix 는 0~1 사이여야 합니다: {args.mix}")
         sys.exit(2)
 
+    ext = core.FORMATS[args.format.upper()]
     folders = ["en", "ja"] if args.lang == "all" else [args.lang]
 
     total = 0
@@ -59,10 +75,17 @@ def main():
         if not files:
             print(f"[{folder_name}] scripts/{folder_name}/ 에 .txt 파일이 없습니다. 건너뜁니다.")
             continue
-        voice = args.voice or default_voice
-        print(f"[{folder_name}] {len(files)}개 파일 처리 중 (목소리={voice}) ...")
+        base_voice = args.voice or default_voice
+        if args.voice2:
+            # ratio = 목소리 A(base) 비중 = 1 - (voice2 비중)
+            voice = core.blend_voices(code, base_voice, args.voice2, 1.0 - args.mix)
+            voice_label = f"{base_voice}+{args.voice2} (voice2 {int(args.mix * 100)}%)"
+        else:
+            voice = base_voice
+            voice_label = base_voice
+        print(f"[{folder_name}] {len(files)}개 파일 처리 중 (목소리={voice_label}, 포맷={args.format}) ...")
         for txt in files:
-            out = OUTPUT_DIR / folder_name / (txt.stem + ".wav")
+            out = OUTPUT_DIR / folder_name / (txt.stem + ext)
             try:
                 audio, sr = core.synthesize(txt.read_text(encoding="utf-8"), code, voice, args.speed)
                 out.parent.mkdir(parents=True, exist_ok=True)
