@@ -159,6 +159,9 @@ footer{display:none!important;}
 .status-ok code{background:#fff;border:1px solid #d6e6f2;border-radius:6px;padding:2px 8px;color:#0086cc;font-size:13px;}
 .stat-list{margin-top:9px;color:#5b6b78;font-size:12.5px;line-height:1.8;}
 .stat-list code{background:#fff;border:1px solid #e0e8ef;border-radius:5px;padding:1px 6px;color:#0086cc;}
+#recent:empty{display:none;}
+.recent{margin-top:14px;}
+.recent b{font-size:12.5px;color:#5b6b78;font-weight:700;letter-spacing:-.01em;}
 
 .folder-tools{gap:8px!important;}
 .folder-tools button{font-weight:600!important;}
@@ -257,7 +260,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         if len(saved) > 8:
             shown += f"<br>… 외 {len(saved) - 8}개"
         status = f'<div class="status-ok">{msg}</div><div class="stat-list">{shown}</div>'
-        return str(saved[0]), status
+        return str(saved[0]), status, [str(p) for p in saved]
 
     # --- 단일: 대본 텍스트로 1개 ---
     progress(0.3, desc="생성 중…")
@@ -273,7 +276,19 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     extra = " · 자막(.srt) 포함" if srt_on else ""
     # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
     status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초{extra}</div>'
-    return str(path), status
+    return str(path), status, [str(path)]
+
+
+def update_recent(just_saved, recent):
+    """방금 저장한 파일을 세션 '최근 생성' 목록 맨 앞에 추가 (중복 제거, 최대 10개)."""
+    new = [p for p in (just_saved or []) if p]
+    combined = new + [p for p in (recent or []) if p not in new]
+    combined = combined[:10]
+    if not combined:
+        return "", combined
+    items = "<br>".join(f"<code>{html.escape(p)}</code>" for p in combined)
+    md = f'<div class="recent"><b>최근 생성 (이번 세션)</b><div class="stat-list">{items}</div></div>'
+    return md, combined
 
 
 def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio):
@@ -380,6 +395,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     status = gr.HTML(elem_id="status")
     with gr.Row(elem_classes="folder-tools"):
         open_btn = gr.Button("저장 폴더 열기", size="sm")
+    recent_html = gr.HTML(elem_id="recent")
+    last_saved = gr.State()
+    recent_state = gr.State([])
 
     lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
@@ -395,7 +413,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, normalize_on, replace_rules],
-              outputs=[audio_out, status])
+              outputs=[audio_out, status, last_saved]).then(
+              update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
 
 
 if __name__ == "__main__":
