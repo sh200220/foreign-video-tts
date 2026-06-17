@@ -16,6 +16,11 @@ gradio==6.18.0
 soundfile
 numpy
 
+# --- Broadcast loudness (LUFS) normalization. pyloudnorm pulls scipy.
+# Verified: installs without moving numpy / breaking torch 2.5.1+cpu here. ---
+pyloudnorm
+scipy
+
 # --- Japanese support (prebuilt G2P => no C++ compiler needed on either OS) ---
 lemon-pyopenjtalk-prebuilt ; sys_platform == "win32"
 pyopenjtalk-prebuilt       ; sys_platform == "darwin"

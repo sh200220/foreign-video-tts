@@ -103,6 +103,45 @@ def normalize_peak(audio, peak=0.97):
     return (audio / m * peak).astype("float32") if m > 0 else audio
 
 
+def normalize_lufs(audio, sample_rate, target_lufs=-14.0, peak_ceiling=0.97):
+    """방송용 체감 음량(LUFS)으로 정규화 후 피크 제한(클리핑 방지).
+    너무 짧거나(0.4초 미만) 측정값이 비유한이면 피크 정규화로 폴백."""
+    try:
+        import pyloudnorm as pyln
+        if len(audio) < int(sample_rate * 0.4):
+            return normalize_peak(audio, peak_ceiling)
+        x = audio.astype("float64")
+        loud = pyln.Meter(sample_rate).integrated_loudness(x)
+        if not np.isfinite(loud):
+            return normalize_peak(audio, peak_ceiling)
+        out = pyln.normalize.loudness(x, loud, target_lufs)
+        m = float(np.max(np.abs(out))) if len(out) else 0.0
+        if m > peak_ceiling:           # LUFS 보정이 피크를 넘기면 줄여 클리핑 방지
+            out = out / m * peak_ceiling
+        return out.astype("float32")
+    except Exception:
+        return normalize_peak(audio, peak_ceiling)
+
+
+def trim_fade(audio, sample_rate, thresh=0.008, fade_ms=12):
+    """앞뒤 무음(임계값 이하)만 잘라내고 짧은 페이드 적용 → (잘린 오디오, 앞에서 자른 초).
+    내부의 조용한 구간(드라마틱한 쉼)은 건드리지 않고 가장자리만."""
+    if len(audio) == 0:
+        return audio, 0.0
+    mask = np.abs(audio) > thresh
+    if not mask.any():
+        return audio, 0.0
+    first = int(np.argmax(mask))
+    last = len(mask) - int(np.argmax(mask[::-1]))
+    out = audio[first:last].astype("float32").copy()
+    n = min(int(sample_rate * fade_ms / 1000), len(out) // 2)
+    if n > 0:
+        ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+        out[:n] *= ramp
+        out[-n:] *= ramp[::-1]
+    return out, first / sample_rate
+
+
 def _srt_time(t):
     ms = int(round(t * 1000))
     h, ms = divmod(ms, 3600000)

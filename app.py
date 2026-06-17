@@ -12,6 +12,7 @@
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -76,13 +77,19 @@ INIT_FOLDER = _s.get("folder") or DEFAULT_OUTPUT
 INIT_MIX = bool(_s.get("mix_on", False))
 INIT_TS = bool(_s.get("add_ts", False))
 INIT_SRT = bool(_s.get("srt_on", False))
-INIT_NORM = bool(_s.get("normalize_on", False))
+NORM_MODES = ["끔", "피크", "방송용 (LUFS)"]
+_nm = _s.get("norm_mode")
+if _nm not in NORM_MODES:                       # 구버전 설정(normalize_on bool) 호환
+    _nm = "피크" if _s.get("normalize_on") else "끔"
+INIT_NORM = _nm
 try:
     INIT_GAP = float(_s.get("gap_sec", 0.0))
 except (TypeError, ValueError):
     INIT_GAP = 0.0
 INIT_GAP = INIT_GAP if 0.0 <= INIT_GAP <= 2.0 else 0.0
 INIT_REPLACE = _s.get("replace_rules", "") or ""
+INIT_TRIM = bool(_s.get("trim_on", False))
+INIT_SCENE = bool(_s.get("scene_split", False))
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -210,15 +217,17 @@ def apply_replacements(text, rules):
 
 
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
-             add_ts, srt_on, gap_sec, normalize_on, replace_rules, progress=gr.Progress()):
+             add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
+             progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
 
     # 마지막 선택을 기억(다음 실행 때 복원)
     save_settings({"lang": lang_label, "voice": voice, "voice2": voice2, "speed": speed,
                    "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts),
-                   "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0),
-                   "normalize_on": bool(normalize_on), "replace_rules": replace_rules or ""})
+                   "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0), "norm_mode": norm_mode,
+                   "replace_rules": replace_rules or "", "trim_on": bool(trim_on),
+                   "scene_split": bool(scene_split)})
 
     try:
         voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
@@ -233,50 +242,63 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     def synth_one(content):
         audio, sr, segs = core.synthesize_segments(
             apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0)
-        if normalize_on:
+        if trim_on:                          # 가장자리 무음 제거 → 자막 타이밍을 앞 trim 만큼 당김
+            audio, lead = core.trim_fade(audio, sr)
+            dur = len(audio) / sr
+            segs = [(t, max(0.0, s - lead), min(dur, max(0.0, e - lead)))
+                    for (t, s, e) in segs if (s - lead) < dur]
+        if norm_mode == "방송용 (LUFS)":
+            audio = core.normalize_lufs(audio, sr)
+        elif norm_mode == "피크":
             audio = core.normalize_peak(audio)
         return audio, sr, segs
 
-    if files:  # --- 배치: 업로드한 .txt 파일마다 1개씩 (파일 이름으로 저장) ---
-        saved, skipped = [], []
-        total = len(files)
-        for i, f in enumerate(files):
+    # 작업 목록: (텍스트소스, 파일여부, 저장이름). 업로드가 있으면 우선(장면분할 무시).
+    if files:
+        jobs = [(f, True, Path(f).stem) for f in files]
+    elif scene_split:                        # 빈 줄로 장면을 나눠 각각 저장
+        blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
+        jobs = [(b, False, f"{filename}_{i + 1:02d}") for i, b in enumerate(blocks)] \
+            or [(text, False, filename)]
+    else:
+        jobs = [(text, False, filename)]
+
+    saved, skipped = [], []                  # saved: (Path, dur); skipped: (이름, 사유)
+    total = len(jobs)
+    for i, (src, is_path, base) in enumerate(jobs):
+        if total > 1:
             progress(i / total, desc=f"{i + 1}/{total} 생성 중…")
-            try:
-                audio, sr, segs = synth_one(Path(f).read_text(encoding="utf-8"))
-                p = core.save_audio(audio, sr, out_folder, named(Path(f).stem), fmt)
-                if srt_on:
-                    core.write_srt(segs, p.with_suffix(".srt"))
-                saved.append(p)
-            except Exception as e:  # 한 파일이 실패해도 나머지는 계속 (tts.py 와 동일한 회복성)
-                skipped.append(f"{Path(f).name} ({e})")
-        progress(1.0)
-        if not saved:
-            raise gr.Error("생성된 파일이 없습니다. " + (" / ".join(skipped) if skipped else ""))
-        msg = f"{len(saved)}개 저장 완료" + (" (자막 포함)" if srt_on else "")
+        try:
+            content = Path(src).read_text(encoding="utf-8") if is_path else src
+            audio, sr, segs = synth_one(content)
+            p = core.save_audio(audio, sr, out_folder, named(base), fmt)
+            if srt_on:
+                core.write_srt(segs, p.with_suffix(".srt"))
+            saved.append((p, len(audio) / sr))
+        except Exception as e:               # 한 개가 실패해도 나머지는 계속
+            skipped.append((base, str(e)))
+    progress(1.0)
+
+    if not saved:
+        raise gr.Error(skipped[0][1] if (skipped and total == 1)
+                       else "생성된 파일이 없습니다. " + " / ".join(f"{b} ({m})" for b, m in skipped))
+
+    paths = [str(p) for p, _ in saved]
+    srt_note = " · 자막(.srt) 포함" if srt_on else ""
+    if len(saved) == 1 and not skipped:
+        p, dur = saved[0]
+        # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
+        status = (f'<div class="status-ok">저장 완료 · <code>{html.escape(str(p))}</code>'
+                  f' · {dur:.1f}초{srt_note}</div>')
+    else:
+        msg = f"{len(saved)}개 저장 완료{srt_note}"
         if skipped:
             msg += f" · {len(skipped)}개 건너뜀"
-        shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p in saved[:8])
+        shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p, _ in saved[:8])
         if len(saved) > 8:
             shown += f"<br>… 외 {len(saved) - 8}개"
         status = f'<div class="status-ok">{msg}</div><div class="stat-list">{shown}</div>'
-        return str(saved[0]), status, [str(p) for p in saved]
-
-    # --- 단일: 대본 텍스트로 1개 ---
-    progress(0.3, desc="생성 중…")
-    try:
-        audio, sr, segs = synth_one(text)
-    except ValueError as e:
-        raise gr.Error(str(e))
-    path = core.save_audio(audio, sr, out_folder, named(filename), fmt)
-    if srt_on:
-        core.write_srt(segs, path.with_suffix(".srt"))
-    progress(1.0)
-    dur = len(audio) / sr
-    extra = " · 자막(.srt) 포함" if srt_on else ""
-    # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
-    status = f'<div class="status-ok">저장 완료 · <code>{html.escape(str(path))}</code> · {dur:.1f}초{extra}</div>'
-    return str(path), status, [str(path)]
+    return paths[0], status, paths
 
 
 def update_recent(just_saved, recent):
@@ -342,6 +364,19 @@ def open_folder(folder):
 with gr.Blocks(title="외국어 영상 TTS") as demo:
     gr.HTML(HEADER_HTML)
 
+    with gr.Accordion("도움말 — 처음이세요? (사용법 펼치기)", open=False):
+        gr.Markdown(
+            "1. **언어·목소리·속도**를 고르고, **미리듣기**로 목소리를 들어볼 수 있어요.\n"
+            "2. **대본**에 읽을 내용을 붙여넣습니다. (영상이 여러 개면 ‘파일로 만들기’로 .txt 여러 개를 한 번에)\n"
+            "3. **포맷**(영상 편집엔 WAV, 공유엔 MP3)과 **저장 폴더**를 고릅니다.\n"
+            "4. **[음성 생성]** → 폴더에 저장되고 바로 재생·다운로드됩니다.\n\n"
+            "- **목소리 섞기**: 두 목소리를 비율로 혼합해 새 음색.\n"
+            "- **자막(.srt)**: 음성과 함께 자막 파일을 만들어 영상 편집기에서 캡션 동기화.\n"
+            "- **음량 정규화**: 클립마다 볼륨을 비슷하게 (방송용 = 유튜브 권장 음량).\n"
+            "- **추가 옵션**: 잘못 읽는 단어 교정(발음 교정), 문단 사이 쉼 넣기.\n"
+            "- **장면별로 나눠 저장**: 대본을 빈 줄로 나눠 장면마다 따로 파일로.",
+            elem_classes="hint")
+
     with gr.Group(elem_classes="card"):
         with gr.Row():
             lang = gr.Dropdown(LANG_LABELS, value=INIT_LANG, label="언어")
@@ -381,7 +416,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         add_ts = gr.Checkbox(value=INIT_TS, label="파일 이름에 날짜·시간 자동 추가 (덮어쓰기 방지)")
         with gr.Row():
             srt_on = gr.Checkbox(value=INIT_SRT, label="자막(.srt)도 같이 저장")
-            normalize_on = gr.Checkbox(value=INIT_NORM, label="음량 맞추기 (피크 기준)")
+            trim_on = gr.Checkbox(value=INIT_TRIM, label="무음 다듬기 + 페이드 (앞뒤 정리)")
+        scene_split = gr.Checkbox(value=INIT_SCENE,
+                                  label="장면별로 나눠 저장 (빈 줄로 장면 구분 → 문단마다 파일)")
+        norm_mode = gr.Radio(NORM_MODES, value=INIT_NORM, label="음량 정규화",
+                             info="피크 = 최대치 맞춤 / 방송용 = 유튜브 등 체감 음량(-14 LUFS)")
         folder = gr.Textbox(value=INIT_FOLDER, label="저장 폴더",
                             info="아래 버튼으로 고르거나, 경로를 직접 입력해도 됩니다.")
         with gr.Row(elem_classes="folder-tools"):
@@ -412,7 +451,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     open_btn.click(open_folder, inputs=folder, outputs=[])
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
-                      mix_ratio, add_ts, srt_on, gap_sec, normalize_on, replace_rules],
+                      mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split],
               outputs=[audio_out, status, last_saved]).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
 
