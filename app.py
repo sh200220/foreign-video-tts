@@ -89,6 +89,12 @@ footer{display:none!important;}
 .gradio-container input:focus,.gradio-container textarea:focus,.gradio-container select:focus{
   border-color:#00aaff!important;box-shadow:0 0 0 3px rgba(0,170,255,.16)!important;}
 
+/* Gradio 기본 장식 아이콘 제거 (라벨 글리프·결과 음표·업로드 화살표). 재생/다운로드 컨트롤은 유지 */
+.audio-out label svg,.upload label svg{display:none!important;}
+.audio-out .empty svg{display:none!important;}
+.upload .icon-wrap{display:none!important;}
+.upload .wrap{gap:2px;}
+
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
 """
 
@@ -130,7 +136,7 @@ def generate(lang_label, voice, speed, text, uploaded_file, filename, folder,
     return str(path), status
 
 
-with gr.Blocks(title="외국어 영상 TTS", theme=gr.themes.Base(), css=CSS, head=HEAD) as demo:
+with gr.Blocks(title="외국어 영상 TTS") as demo:
     gr.HTML(HEADER_HTML)
 
     with gr.Group(elem_classes="card"):
@@ -148,7 +154,7 @@ with gr.Blocks(title="외국어 영상 TTS", theme=gr.themes.Base(), css=CSS, he
     with gr.Group(elem_classes="card"):
         text = gr.Textbox(lines=6, label="대본",
                           placeholder="여기에 대본을 붙여넣으세요. 문장·문단마다 줄바꿈하면 더 자연스럽습니다.")
-        upload = gr.File(file_count="single", file_types=[".txt"],
+        upload = gr.File(file_count="single", file_types=[".txt"], elem_classes="upload",
                          label="또는 .txt 파일 업로드 (선택 — 업로드 시 위 대본 대신 사용)")
 
     with gr.Group(elem_classes="card"):
@@ -158,7 +164,7 @@ with gr.Blocks(title="외국어 영상 TTS", theme=gr.themes.Base(), css=CSS, he
             fmt = gr.Dropdown(FORMAT_LABELS, value="WAV", label="포맷 (WAV = 편집용 / MP3 = 공유)")
 
     btn = gr.Button("음성 생성", variant="primary", elem_classes="generate-btn")
-    audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath")
+    audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath", elem_classes="audio-out")
     status = gr.HTML(elem_id="status")
 
     lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
@@ -170,5 +176,7 @@ with gr.Blocks(title="외국어 영상 TTS", theme=gr.themes.Base(), css=CSS, he
 
 
 if __name__ == "__main__":
+    # Gradio 6.0+: theme/css/head 는 launch() 로 전달.
     # allowed_paths: 사용자가 지정한 폴더(보통 홈 디렉터리 하위)의 파일을 브라우저에서 재생/다운로드 허용
-    demo.launch(inbrowser=True, allowed_paths=[str(Path.home()), DEFAULT_OUTPUT])
+    demo.launch(inbrowser=True, allowed_paths=[str(Path.home()), DEFAULT_OUTPUT],
+                theme=gr.themes.Base(), css=CSS, head=HEAD)
