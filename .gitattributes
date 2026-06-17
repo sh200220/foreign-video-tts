@@ -1,0 +1,4 @@
+# 셸 스크립트는 LF, 배치 파일은 CRLF로 강제 (크로스플랫폼)
+*.command text eol=lf
+*.sh      text eol=lf
+*.bat     text eol=crlf

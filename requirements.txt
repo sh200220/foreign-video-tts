@@ -1,22 +1,24 @@
-# Kokoro TTS dependencies (CPU, commercial-friendly license)
-# Install with:  pip install -r requirements.txt
+# TTS dependencies (CPU, commercial-friendly license). ASCII only (pip reads this
+# as the system codepage on some locales, so non-ASCII here can break parsing).
+# Install with:  pip install -r requirements.txt   (works on Windows and macOS, CPU only)
 
 # --- PyTorch (CPU build) ---
-# Pinned to a stable build. The newest torch on PyPI (2.12.0) fails to initialize
-# on this machine (c10.dll, WinError 1114), so we use a known-good CPU build from
-# the official PyTorch index. Do not bump this without testing `import torch`.
+# Windows: +cpu wheel from the official PyTorch index. The newest PyPI torch
+# (2.12.0) fails to load on Windows here (c10.dll, WinError 1114).
+# macOS: the normal PyPI wheel (Apple Silicon / Intel).
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu
+torch==2.5.1+cpu ; sys_platform == "win32"
+torch==2.5.1     ; sys_platform == "darwin"
 
-# --- Core TTS (English works out of the box) ---
-kokoro
+# --- Core TTS + web UI (pinned to tested versions) ---
+kokoro==0.9.4
+gradio==6.18.0
 soundfile
 numpy
 
-# --- Japanese support ---
-# Prebuilt pyopenjtalk wheel => no C++ compiler needed on Windows.
-# (We avoid misaki[ja], which depends on source-only pyopenjtalk that fails to build.)
-lemon-pyopenjtalk-prebuilt
+# --- Japanese support (prebuilt G2P => no C++ compiler needed on either OS) ---
+lemon-pyopenjtalk-prebuilt ; sys_platform == "win32"
+pyopenjtalk-prebuilt       ; sys_platform == "darwin"
 fugashi
 unidic-lite
 jaconv

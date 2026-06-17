@@ -58,11 +58,18 @@ torch==2.5.1     ; sys_platform == "darwin"
 kokoro, soundfile, numpy, gradio
 # 일본어
 lemon-pyopenjtalk-prebuilt ; sys_platform == "win32"
-pyopenjtalk                ; sys_platform == "darwin"   # 맥은 clang으로 자체 빌드 가능(Xcode CLT 필요)
+pyopenjtalk-prebuilt       ; sys_platform == "darwin"   # 맥용 cp311 prebuilt 휠 있음(0.3.0, Xcode 불필요)
 fugashi, unidic-lite, jaconv, mojimoji
 ```
 - 윈도우: 검증 완료 경로.
-- 맥: 코드로 준비하되 **동업자 맥에서 첫 실행 테스트 필요**(torch·pyopenjtalk 빌드 가능 여부). 실패 시 대안(prebuilt 맥 휠 확인 또는 MeloTTS) 강구.
+- 맥: torch(일반 2.5.1) + `pyopenjtalk-prebuilt`(0.3.0, cp311 universal2/arm64/x86_64 휠 확인) 모두 prebuilt → 컴파일러 불필요. 단 여기서 실행 불가 → **동업자 맥에서 첫 실행 테스트 필요**(prebuilt가 misaki API와 맞는지 확인).
+
+## 구현 순서 (advisor 반영)
+1. **gradio 먼저 설치 후 kokoro 재검증**(import torch + 영/일 1회 생성) — gradio가 공유 의존성(pydantic/click/numpy 등)을 흔들 수 있어 app.py 작성 전에 확인. requirements.txt 재해석도 확인.
+2. `kokoro_core.py` 작성 → `tts.py` 리팩터 후 CLI 회귀 확인.
+3. `app.py` 작성: `launch(allowed_paths=[저장폴더])`로 임의 폴더 파일 재생 허용. 파일명/충돌 로직 코드 테스트.
+4. **UI 검증의 정직한 범위**: 코어·파일명 로직은 코드로 테스트, 서버 기동만 확인. 실제 브라우저 클릭은 사용자/동업자가 확인.
+5. requirements 마커 + 셋업/실행 스크립트 + README → 비공개 GitHub push (`gh` 인증 확인됨: sh200220).
 
 ## 설치·실행 스크립트 (더블클릭 수준)
 - `setup-windows.bat`, `setup-mac.command`: venv 생성 + `pip install -r requirements.txt`.
