@@ -1,5 +1,23 @@
-# Kokoro TTS 워크플로우 의존성 (CPU 동작, 상업적 사용 가능 라이선스)
+# Kokoro TTS dependencies (CPU, commercial-friendly license)
+# Install with:  pip install -r requirements.txt
+
+# --- PyTorch (CPU build) ---
+# Pinned to a stable build. The newest torch on PyPI (2.12.0) fails to initialize
+# on this machine (c10.dll, WinError 1114), so we use a known-good CPU build from
+# the official PyTorch index. Do not bump this without testing `import torch`.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+
+# --- Core TTS (English works out of the box) ---
 kokoro
 soundfile
-misaki[ja]
 numpy
+
+# --- Japanese support ---
+# Prebuilt pyopenjtalk wheel => no C++ compiler needed on Windows.
+# (We avoid misaki[ja], which depends on source-only pyopenjtalk that fails to build.)
+lemon-pyopenjtalk-prebuilt
+fugashi
+unidic-lite
+jaconv
+mojimoji

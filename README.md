@@ -1,7 +1,9 @@
 # 외국어 영상용 TTS (일본어 · 영어)
 
 무료 오픈소스 모델 **Kokoro**(Apache 2.0)로 일본어·영어 영상 내레이션 음성을 만드는 작업 폴더입니다.
-대본 텍스트(.txt)를 넣고 스크립트 한 번 실행하면 음성(.wav)이 나옵니다. GPU 없이 CPU에서 동작합니다.
+대본 텍스트(.txt)를 넣고 스크립트 한 번 실행하면 음성(.wav)이 나옵니다. **GPU 없이 CPU에서 동작**합니다.
+
+> ✅ 이 환경(Windows 11, Python 3.11, i7-1260P)에서 영어·일본어 모두 **생성 검증 완료**.
 
 ---
 
@@ -26,20 +28,19 @@ TTS/
 
 ## 1. 설치 (처음 한 번만)
 
-PowerShell에서 이 폴더(`C:\Users\sh200\Desktop\TTS`)에 들어간 뒤:
+PowerShell에서 이 폴더(`C:\Users\sh200\Desktop\TTS`)로 이동한 뒤:
 
 ```powershell
-# 1) 전용 가상환경 만들기 (다른 파이썬 환경과 분리)
+# 1) 전용 가상환경 생성
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 
-# 2) 의존성 설치
-pip install -r requirements.txt
+# 2) 의존성 설치 (torch CPU + Kokoro + 일본어 지원이 한 번에 설치됩니다)
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-> 처음 실행 시 모델(약 300MB)이 자동으로 한 번 다운로드됩니다.
->
-> 만약 영어에서 `espeak` 관련 오류가 나면 [espeak-ng](https://github.com/espeak-ng/espeak-ng/releases) 를 설치하세요(무료). 최신 버전은 보통 자동 포함되어 추가 설치가 필요 없습니다.
+> **처음 실행 시 자동 다운로드** 되는 것들 (한 번만): Kokoro 모델(~327MB), 영어 발음용 `en_core_web_sm`, 일본어용 pyopenjtalk 사전. 인터넷 연결 필요.
+
+설치는 끝났습니다. (`requirements.txt`가 torch CPU 버전 고정과 일본어 의존성까지 모두 처리합니다.)
 
 ---
 
@@ -47,15 +48,18 @@ pip install -r requirements.txt
 
 1. `scripts/en/` 또는 `scripts/ja/` 에 대본을 `.txt`(UTF-8)로 저장합니다.
    - **문장이나 문단마다 줄바꿈**을 넣으면 더 자연스럽게 끊어 읽습니다.
-2. 가상환경을 켠 상태에서 실행:
+2. 실행 (가상환경을 따로 활성화할 필요 없이 venv 파이썬을 직접 호출):
 
 ```powershell
-python tts.py              # en, ja 폴더 전부 처리
-python tts.py --lang ja    # 일본어만
-python tts.py --lang en --voice am_michael --speed 1.1   # 목소리·속도 지정
+.\.venv\Scripts\python.exe tts.py              # en, ja 폴더 전부 처리
+.\.venv\Scripts\python.exe tts.py --lang ja    # 일본어만
+.\.venv\Scripts\python.exe tts.py --lang en --voice am_michael --speed 1.1
 ```
 
 3. `output/` 폴더에 `.wav` 파일이 생성됩니다.
+
+> 매번 `.\.venv\Scripts\python.exe` 를 치기 번거로우면 `.\.venv\Scripts\Activate.ps1` 로 가상환경을 활성화한 뒤 `python tts.py` 만 써도 됩니다.
+> (활성화 시 "스크립트 실행이 차단됨" 오류가 나면: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 한 번 실행)
 
 ### 옵션
 | 옵션 | 설명 | 기본값 |
@@ -77,7 +81,7 @@ python tts.py --lang en --voice am_michael --speed 1.1   # 목소리·속도 지
 ## 3. 영상으로 만들기
 
 ```
-대본(.txt) → python tts.py → output/*.wav → 영상 편집기에서 영상+음성 합치기
+대본(.txt) → tts.py 실행 → output/*.wav → 영상 편집기에서 영상+음성 합치기
 ```
 
 무료 편집기: **CapCut**, **DaVinci Resolve**, **Shotcut** 등. `.wav`를 그대로 불러오면 됩니다.
@@ -95,7 +99,17 @@ MP3가 필요하면 [ffmpeg](https://ffmpeg.org/)로 변환: `ffmpeg -i output/e
 
 ---
 
-## 5. 일본어 설치가 막힐 때 (대안: MeloTTS)
+## 5. 문제 해결 (Troubleshooting)
 
-Windows에서 일본어 의존성 설치가 실패하면, 같은 폴더 구조를 유지한 채 엔진만 **MeloTTS**(MIT)로 교체할 수 있습니다.
-필요하시면 알려주세요 — `tts.py`의 MeloTTS 버전을 안내해 드립니다.
+- **`import torch` 에서 `c10.dll ... WinError 1114` 오류**
+  최신 torch(2.12.0)가 이 PC에서 초기화에 실패합니다. **안정 버전으로 고정**하세요(이미 `requirements.txt`에 반영됨):
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install "torch==2.5.1+cpu" --index-url https://download.pytorch.org/whl/cpu
+  ```
+  → **torch를 임의로 최신으로 올리지 마세요.**
+
+- **`symlinks ... degraded` 경고**: 무해합니다. 거슬리면 Windows "개발자 모드"를 켜면 사라집니다.
+
+- **`HF_TOKEN` 경고**: 무해합니다(다운로드 속도 제한 안내일 뿐).
+
+- **일본어 설치가 정말 안 될 때 (심층 대안)**: 본 프로젝트는 미리빌드 휠(`lemon-pyopenjtalk-prebuilt`)로 컴파일러 문제를 회피합니다. 그래도 막히면 일본어 엔진만 **MeloTTS**(MIT)로 교체할 수 있습니다 — 필요 시 요청하세요.

@@ -69,3 +69,24 @@ TTS/
 
 ## 범위 밖 (YAGNI)
 - 번역, 자막(.srt) 생성, 음성 복제, GUI, MP3 자동 변환(README에 ffmpeg 한 줄 안내로 충분).
+
+## 구현 메모 (2026-06-17, 실제 설치에서 발견·해결)
+
+설치 중 Windows 특유의 두 가지 문제를 만나 해결함:
+
+1. **torch 2.12.0 로드 실패 → 안정 버전 고정.**
+   PyPI 최신 torch(2.12.0) 설치 시 `import torch` 에서 `c10.dll` 초기화 실패(`OSError WinError 1114`).
+   체계적 디버깅으로 PATH 충돌·OpenMP·MSVC 런타임(14.44 최신)·CPU(i7-1260P, AVX2) 모두 기각 →
+   원인은 torch 2.12.0 휠 자체. **`torch==2.5.1+cpu`(공식 CPU 인덱스)로 고정**하니 정상 동작.
+   `requirements.txt`에 `--extra-index-url https://download.pytorch.org/whl/cpu` + 핀으로 반영.
+
+2. **일본어 `pyopenjtalk` 빌드 실패 → 미리빌드 휠로 우회.**
+   `misaki[ja]`가 소스 전용 `pyopenjtalk`를 끌어와 C++ 컴파일러 부재로 빌드 실패(`CMAKE_C_COMPILER not set`).
+   `misaki[ja]` 대신 구성요소를 직접 설치: **`lemon-pyopenjtalk-prebuilt`(cp311 win 미리빌드 휠)** +
+   `fugashi` + `unidic-lite`(정식 `unidic` 1GB 다운로드 회피) + `jaconv` + `mojimoji`.
+   → 컴파일러 없이 설치 성공. (MeloTTS 대안은 불필요해져 심층 폴백으로 강등.)
+
+## 검증 결과 (완료)
+- 영어: `output/en/sample_intro.wav` 생성 — 24000Hz, 7.92초, 372KB ✓
+- 일본어: `output/ja/sample_intro.wav` 생성 — 24000Hz, 9.28초, 435KB ✓
+- `pip install -r requirements.txt` 재해석 시 충돌 없이 전부 satisfied ✓
