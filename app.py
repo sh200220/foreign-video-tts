@@ -10,6 +10,9 @@
 """
 
 import html
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import gradio as gr
@@ -90,11 +93,13 @@ footer{display:none!important;}
 .gradio-container input:focus,.gradio-container textarea:focus,.gradio-container select:focus{
   border-color:#00aaff!important;box-shadow:0 0 0 3px rgba(0,170,255,.16)!important;}
 
-/* Gradio 기본 장식 아이콘 제거 (라벨 글리프·결과 음표·업로드 화살표). 재생/다운로드 컨트롤은 유지 */
-.audio-out label svg,.upload label svg{display:none!important;}
+/* 결과(오디오) 영역의 장식 음표만 숨김 — 재생/다운로드 컨트롤·업로드 아이콘은 유지 */
+.audio-out label svg{display:none!important;}
 .audio-out .empty svg{display:none!important;}
-.upload .icon-wrap{display:none!important;}
-.upload .wrap{gap:2px;}
+
+/* 폴더 빠른 선택/열기 버튼 */
+.folder-tools{gap:8px!important;}
+.folder-tools button{font-weight:600!important;}
 
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
 """
@@ -138,6 +143,43 @@ def generate(lang_label, voice, speed, text, uploaded_file, filename, folder,
     return str(path), status
 
 
+# --- 저장 폴더 고르기/열기 (로컬 앱이므로 OS 기능 사용) ---
+
+def pick_folder(current):
+    """OS 네이티브 '폴더 선택' 창을 띄워 고른 경로를 반환. 취소하면 기존 값 유지.
+
+    Tk 는 별도 프로세스(자체 main 스레드)에서 실행 → 맥/윈 모두 안전.
+    Tk 가 없는 환경이면 조용히 기존 값을 유지(아래 입력칸 직접 입력으로 폴백)."""
+    code = (
+        "import tkinter as tk, sys\n"
+        "from tkinter import filedialog\n"
+        "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+        "p = filedialog.askdirectory()\n"
+        "sys.stdout.buffer.write((p or '').encode('utf-8'))\n"
+    )
+    try:
+        res = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=300)
+        chosen = res.stdout.decode("utf-8", "replace").strip()
+        return chosen or (current or DEFAULT_OUTPUT)
+    except Exception:
+        return current or DEFAULT_OUTPUT
+
+
+def open_folder(folder):
+    """저장 폴더를 탐색기(윈도우)/파인더(맥)로 연다."""
+    target = Path(folder or DEFAULT_OUTPUT).expanduser()
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target))  # noqa: B606  (윈도우 전용)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(target)])
+        else:
+            subprocess.run(["xdg-open", str(target)])
+    except Exception as e:
+        raise gr.Error(f"폴더를 열 수 없습니다: {e}")
+
+
 with gr.Blocks(title="외국어 영상 TTS") as demo:
     gr.HTML(HEADER_HTML)
 
@@ -162,15 +204,28 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     with gr.Group(elem_classes="card"):
         with gr.Row():
             filename = gr.Textbox(value="narration", label="파일 이름 (확장자 자동)")
-            folder = gr.Textbox(value=DEFAULT_OUTPUT, label="저장 폴더")
             fmt = gr.Dropdown(FORMAT_LABELS, value="WAV", label="포맷 (WAV = 편집용 / MP3 = 공유)")
+        folder = gr.Textbox(value=DEFAULT_OUTPUT, label="저장 폴더",
+                            info="아래 버튼으로 고르거나, 경로를 직접 입력해도 됩니다.")
+        with gr.Row(elem_classes="folder-tools"):
+            browse_btn = gr.Button("폴더 찾아보기…", size="sm")
+            desktop_btn = gr.Button("바탕화면", size="sm")
+            downloads_btn = gr.Button("다운로드", size="sm")
+            default_btn = gr.Button("기본 폴더", size="sm")
 
     btn = gr.Button("음성 생성", variant="primary", elem_classes="generate-btn")
     audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath", elem_classes="audio-out")
     status = gr.HTML(elem_id="status")
+    with gr.Row(elem_classes="folder-tools"):
+        open_btn = gr.Button("저장 폴더 열기", size="sm")
 
     lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
     mix_on.change(lambda on: gr.update(visible=on), inputs=mix_on, outputs=mix_row)
+    browse_btn.click(pick_folder, inputs=folder, outputs=folder)
+    desktop_btn.click(lambda: str(Path.home() / "Desktop"), outputs=folder)
+    downloads_btn.click(lambda: str(Path.home() / "Downloads"), outputs=folder)
+    default_btn.click(lambda: DEFAULT_OUTPUT, outputs=folder)
+    open_btn.click(open_folder, inputs=folder, outputs=[])
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder,
                       fmt, mix_on, voice2, mix_ratio],
