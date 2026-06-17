@@ -24,15 +24,14 @@
     (설치 화면에서 **"Add python.exe to PATH" 체크**) 후 다시 더블클릭하세요.
 
 ### 맥
-1. (처음 한 번) 폴더에서 터미널을 열고 실행 권한 부여:
-   ```bash
-   chmod +x START-Mac.command
-   ```
-2. **`START-Mac.command` 더블클릭**
-   - "확인되지 않은 개발자" 경고 시: 파일 **우클릭 → 열기**.
+1. (처음 한 번) **`START-Mac.command` 우클릭 → 열기** → 뜨는 창에서 **열기** 클릭.
+   - 인터넷에서 받은 앱이라 나오는 안전 확인입니다. **두 번째부터는 그냥 더블클릭**하면 됩니다.
    - 파이썬 3.11이 없으면 안내가 나옵니다 →
      [python.org 3.11 (macOS)](https://www.python.org/downloads/release/python-3119/) 설치
-     (또는 `brew install python@3.11`) 후 다시 더블클릭.
+     (또는 `brew install python@3.11`) 후 다시 열기.
+
+> 압축은 맥 기본 압축 해제(더블클릭)로 풀면 **실행 권한이 유지**되어 `chmod` 없이 바로 됩니다.
+> 혹시 더블클릭 시 텍스트로만 열리면, 터미널에서 `chmod +x START-Mac.command` 한 번 후 다시 시도하세요.
 
 > 처음 실행 시 모델(~327MB)·발음 데이터가 자동 다운로드됩니다(한 번만, 인터넷 필요).
 

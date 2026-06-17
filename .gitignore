@@ -15,5 +15,8 @@ output/**/*.ogg
 # 배포용 ZIP (make-zip.bat 산출물)
 dist/
 
+# Playwright 스크린샷/임시 산출물
+.playwright-mcp/
+
 # 모델/HF 캐시가 로컬에 떨어질 경우
 .cache/

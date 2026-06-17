@@ -1,8 +1,9 @@
 #!/bin/bash
 # ===== 외국어 영상 TTS - 맥 (설치 겸 실행, 더블클릭) =====
 # 처음 실행하면 필요한 것을 자동으로 설치하고, 이후엔 바로 실행됩니다.
-# (처음 한 번은 실행 권한이 필요합니다 — README 의 맥 안내 참고)
 cd "$(dirname "$0")" || exit 1
+# 인터넷에서 받은 파일의 '격리(quarantine)' 표시를 풀어 두면 이후 실행이 매끄럽습니다 (best-effort).
+xattr -dr com.apple.quarantine "$(pwd)" 2>/dev/null || true
 
 # (1) 이미 설치돼 있으면(.venv) 곧바로 실행
 if [ ! -x ".venv/bin/python" ]; then
