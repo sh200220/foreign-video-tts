@@ -14,7 +14,11 @@ torch==2.5.1     ; sys_platform == "darwin"
 kokoro==0.9.4
 gradio==6.18.0
 soundfile
-numpy
+# numpy: macOS uses the older pyopenjtalk-prebuilt (built for the numpy 1.x ABI),
+# so pin numpy 1.26.4 there (last 1.x release; also meets scipy's >=1.26.4 floor).
+# Other platforms (Windows uses lemon-pyopenjtalk-prebuilt) build for numpy 2.x.
+numpy==1.26.4 ; sys_platform == "darwin"
+numpy         ; sys_platform != "darwin"
 
 # --- Broadcast loudness (LUFS) normalization. pyloudnorm pulls scipy.
 # Verified: installs without moving numpy / breaking torch 2.5.1+cpu here. ---

@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,9 @@ DEFAULT_OUTPUT = str((Path(__file__).resolve().parent / "output").resolve())
 LANG_LABELS = list(core.LANGS.keys())
 FIRST_LANG = LANG_LABELS[0]
 FORMAT_LABELS = list(core.FORMATS.keys())
+
+# 자동저장 OFF일 때 '미저장 미리듣기'용 임시 폴더 (브라우저 재생 전용; 실제 저장은 [저장] 버튼)
+PREVIEW_DIR = str(Path(tempfile.gettempdir()) / "foreign-video-tts-preview")
 
 # 실측 기반 대략치 (chars/sec, 속도 1.0): 영어 13.6 / 일본어 5.6
 CPS = {"a": 13.6, "b": 13.6, "j": 5.6}
@@ -90,6 +94,7 @@ INIT_GAP = INIT_GAP if 0.0 <= INIT_GAP <= 2.0 else 0.0
 INIT_REPLACE = _s.get("replace_rules", "") or ""
 INIT_TRIM = bool(_s.get("trim_on", False))
 INIT_SCENE = bool(_s.get("scene_split", False))
+INIT_AUTOSAVE = bool(_s.get("autosave", True))   # 생성 시 자동 저장 (기본 ON; 끄면 [저장] 버튼으로)
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -184,6 +189,31 @@ footer{display:none!important;}
 .audio-out .empty svg{display:none!important;}
 
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+
+/* ===== 다크모드: 시스템/브라우저 설정 자동 따라감 (Gradio 가 .dark 클래스 적용) =====
+   라이트 규칙은 그대로 두고, .dark 일 때의 색만 덮어써 대비를 살린다. (azure 액센트 유지) */
+.dark,html.dark,body.dark,.dark gradio-app,.dark .gradio-container{background:#0e1620!important;}
+.dark .gradio-container{
+  --color-accent:#00aaff;--color-accent-soft:#10324a;
+  --body-background-fill:#0e1620;--background-fill-primary:#18222e;--background-fill-secondary:#0e1620;
+  --body-text-color:#e6edf3;--body-text-color-subdued:#93a4b3;
+  --block-background-fill:#18222e;--block-border-color:#28333f;
+  --block-label-text-color:#93a4b3;--block-title-text-color:#e6edf3;
+  --input-background-fill:#131d27;--input-border-color:#2b3a48;--input-border-color-focus:#00aaff;
+}
+.dark .app-head .name{color:#e6edf3;}
+.dark .app-head .sub{color:#93a4b3;}
+.dark .card{background:#18222e!important;border-color:#28333f!important;
+  box-shadow:0 1px 2px rgba(0,0,0,.30),0 10px 28px rgba(0,0,0,.40)!important;}
+.dark .gradio-container label span{color:#c4d2dd!important;}
+.dark .stats p{color:#8fa0ad!important;}
+.dark .hint p{color:#93a4b3!important;}
+.dark .status-ok{color:#e6edf3;background:#0c2230;border-color:#1b4a63;}
+.dark .status-ok code{background:#0e1925;border-color:#284a5f;color:#5cc5ff;}
+.dark .stat-list{color:#93a4b3;}
+.dark .stat-list code{background:#0e1925;border-color:#284050;color:#5cc5ff;}
+.dark .recent b{color:#93a4b3;}
+.dark .preview-audio{border-color:#28333f!important;}
 """
 
 
@@ -217,7 +247,7 @@ def apply_replacements(text, rules):
 
 
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
-             add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
+             add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
              progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
@@ -227,7 +257,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts),
                    "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0), "norm_mode": norm_mode,
                    "replace_rules": replace_rules or "", "trim_on": bool(trim_on),
-                   "scene_split": bool(scene_split)})
+                   "scene_split": bool(scene_split), "autosave": bool(autosave)})
 
     try:
         voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
@@ -252,6 +282,20 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         elif norm_mode == "피크":
             audio = core.normalize_peak(audio)
         return audio, sr, segs
+
+    # 자동저장 OFF + 단일 대본(업로드/장면분할 아님) → 저장하지 않고 미리듣기만.
+    #   결과는 메모리(State)에 들고 있다가 [저장] 버튼을 누를 때 폴더에 기록한다.
+    if not autosave and not files and not scene_split:
+        if not (text or "").strip():
+            raise gr.Error("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
+        try:
+            audio, sr, segs = synth_one(text)
+        except Exception as e:
+            raise gr.Error(str(e))
+        preview_path = core.save_audio(audio, sr, PREVIEW_DIR, "preview", fmt)
+        status = ('<div class="status-ok">생성됨 · 아직 저장 안 함 — '
+                  '아래 <b>[저장]</b> 버튼을 누르면 폴더에 저장돼요.</div>')
+        return str(preview_path), status, [], (audio, sr, segs)
 
     # 작업 목록: (텍스트소스, 파일여부, 저장이름). 업로드가 있으면 우선(장면분할 무시).
     if files:
@@ -298,7 +342,31 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         if len(saved) > 8:
             shown += f"<br>… 외 {len(saved) - 8}개"
         status = f'<div class="status-ok">{msg}</div><div class="stat-list">{shown}</div>'
-    return paths[0], status, paths
+    return paths[0], status, paths, None
+
+
+def save_pending(pending, filename, folder, fmt, add_ts, srt_on):
+    """자동저장 OFF로 만든 '미저장 결과'를 지금 설정대로 폴더에 저장한다.
+
+    pending = (audio_np, sample_rate, segments) 또는 None.
+    저장 후 pending 을 비우고(최근 목록 갱신용) 저장 경로를 반환한다."""
+    if not pending:
+        raise gr.Error("저장할 새 결과가 없어요. 먼저 음성을 생성하세요. "
+                       "(자동 저장 ON이면 생성 시 바로 저장됩니다.)")
+    audio, sr, segs = pending
+    out_folder = folder or DEFAULT_OUTPUT
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = f"{filename}_{stamp}" if add_ts else (filename or "narration")
+    try:
+        p = core.save_audio(audio, sr, out_folder, base, fmt)
+        if srt_on:
+            core.write_srt(segs, p.with_suffix(".srt"))
+    except Exception as e:
+        raise gr.Error(str(e))
+    srt_note = " · 자막(.srt) 포함" if srt_on else ""
+    status = (f'<div class="status-ok">저장 완료 · <code>{html.escape(str(p))}</code>'
+              f' · {len(audio) / sr:.1f}초{srt_note}</div>')
+    return status, [str(p)], None
 
 
 def update_recent(just_saved, recent):
@@ -405,7 +473,12 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 (선택)", open=False):
             replace_rules = gr.Textbox(value=INIT_REPLACE, lines=3,
                                        label="발음 교정 (한 줄에 하나: 원문=읽을말)",
-                                       placeholder="예) AI=에이아이\n예) 2024=이천이십사년")
+                                       info="읽을말은 그 목소리의 언어로 적으세요 — 영어=영어 철자, "
+                                            "일본어=카나. 한글로 적으면 안 읽혀요. "
+                                            "(짧은 글자는 다른 단어 속까지 바뀔 수 있어요)",
+                                       placeholder="예) 영어 목소리:  AI=ay eye\n"
+                                                   "예) 영어 목소리:  2024=twenty twenty four\n"
+                                                   "예) 일본어 목소리:  AI=エーアイ")
             gap_sec = gr.Slider(0.0, 2.0, value=INIT_GAP, step=0.1, label="문단(줄) 사이 쉼",
                                 info="줄바꿈마다 넣을 무음 길이(초). 0 = 없음")
 
@@ -413,6 +486,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         with gr.Row():
             filename = gr.Textbox(value="narration", label="파일 이름 (확장자 자동)")
             fmt = gr.Dropdown(FORMAT_LABELS, value=INIT_FMT, label="포맷 (WAV = 편집용 / MP3 = 공유)")
+        autosave = gr.Checkbox(value=INIT_AUTOSAVE,
+                               label="생성 시 자동 저장 (끄면 아래 [저장] 버튼으로 직접 저장)")
         add_ts = gr.Checkbox(value=INIT_TS, label="파일 이름에 날짜·시간 자동 추가 (덮어쓰기 방지)")
         with gr.Row():
             srt_on = gr.Checkbox(value=INIT_SRT, label="자막(.srt)도 같이 저장")
@@ -433,10 +508,12 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath", elem_classes="audio-out")
     status = gr.HTML(elem_id="status")
     with gr.Row(elem_classes="folder-tools"):
+        save_btn = gr.Button("저장", size="sm")
         open_btn = gr.Button("저장 폴더 열기", size="sm")
     recent_html = gr.HTML(elem_id="recent")
     last_saved = gr.State()
     recent_state = gr.State([])
+    pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
 
     lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
@@ -451,13 +528,18 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     open_btn.click(open_folder, inputs=folder, outputs=[])
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
-                      mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split],
-              outputs=[audio_out, status, last_saved]).then(
+                      mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
+                      autosave],
+              outputs=[audio_out, status, last_saved, pending_state]).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
+    save_btn.click(save_pending,
+                   inputs=[pending_state, filename, folder, fmt, add_ts, srt_on],
+                   outputs=[status, last_saved, pending_state]).then(
+                   update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
 
 
 if __name__ == "__main__":
     # Gradio 6.0+: theme/css/head 는 launch() 로 전달.
     # allowed_paths: 사용자가 지정한 폴더(보통 홈 디렉터리 하위)의 파일을 브라우저에서 재생/다운로드 허용
-    demo.launch(inbrowser=True, allowed_paths=[str(Path.home()), DEFAULT_OUTPUT],
+    demo.launch(inbrowser=True, allowed_paths=[str(Path.home()), DEFAULT_OUTPUT, PREVIEW_DIR],
                 theme=gr.themes.Base(), css=CSS, head=HEAD)
