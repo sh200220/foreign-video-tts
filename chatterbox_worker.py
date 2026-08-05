@@ -15,14 +15,21 @@ stdin 이 닫히면(부모 앱 종료) 함께 종료된다.
 """
 
 import json
+import os
 import sys
 
 sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 프로토콜 전용 스트림: 진짜 stdout(fd 1)을 복제해 확보하고,
+# 이후 라이브러리들의 print(예: PerthNet 로드 메시지)는 전부 stderr 로 보낸다.
+# -> 부모(chatterbox_engine)는 fd 1 에서 순수 JSON 라인만 받는다.
+_PROTO = os.fdopen(os.dup(1), "w", encoding="utf-8", errors="replace")
+sys.stdout = sys.stderr
 
 
 def say(obj):
-    print(json.dumps(obj, ensure_ascii=False), flush=True)
+    _PROTO.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    _PROTO.flush()
 
 
 def main():

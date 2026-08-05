@@ -40,6 +40,22 @@ _device = None        # 워커가 보고한 장치 ("cuda"/"cpu")
 READY_TIMEOUT_SEC = 1800    # 첫 실행은 모델(~3GB) 자동 다운로드 때문에 오래 걸릴 수 있음
 
 
+def _read_json(proc, max_skip=50):
+    """워커 stdout 에서 JSON 라인을 읽는다. 혹시 끼어든 비-JSON 로그 줄은 건너뛴다."""
+    for _ in range(max_skip):
+        line = proc.stdout.readline()
+        if not line:
+            return {}
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return {}
+
+
 def cfg_for_emotion(emotion):
     """감정 강도에 맞는 cfg_weight (감정↑ 이면 말이 빨라지므로 cfg 를 낮춰 보정).
 
@@ -60,11 +76,7 @@ def _spawn():
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         encoding="utf-8", errors="replace", cwd=str(_ROOT))
-    line = proc.stdout.readline()          # ready 대기 (모델 로드/다운로드)
-    try:
-        info = json.loads(line) if line else {}
-    except json.JSONDecodeError:
-        info = {}
+    info = _read_json(proc)                # ready 대기 (모델 로드/다운로드)
     if not info.get("ready"):
         proc.kill()
         raise RuntimeError(
@@ -115,15 +127,14 @@ def synth_line(text, lang_code, emotion=DEFAULT_EMOTION):
     try:
         proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
         proc.stdin.flush()
-        line = proc.stdout.readline()
+        res = _read_json(proc)
     except OSError as e:
         shutdown()
         raise RuntimeError(f"고품질 워커와의 통신이 끊겼습니다: {e}. 다시 시도해 주세요.")
-    if not line:
+    if not res:
         shutdown()
         raise RuntimeError("고품질 워커가 종료됐습니다. 다시 시도해 주세요. "
                            "(메모리가 부족하면 다른 프로그램을 닫아 보세요)")
-    res = json.loads(line)
     if not res.get("ok"):
         raise RuntimeError(f"고품질 합성 실패: {res.get('error')}")
     try:
