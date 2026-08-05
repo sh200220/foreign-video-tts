@@ -41,6 +41,12 @@ if errorlevel 1 (
 )
 
 :run
+REM 업데이트 대비: 새로 필요한 패키지가 빠져 있으면 자동으로 보충 설치 (약 1초 확인)
+".venv\Scripts\python.exe" -c "import supertonic, onnxruntime" >nul 2>&1
+if errorlevel 1 (
+  echo [업데이트] 새 기능에 필요한 패키지를 설치합니다... 이 창을 닫지 마세요.
+  ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+)
 echo 앱을 시작합니다. 잠시 후 브라우저가 자동으로 열립니다...
 echo (이 창을 닫으면 앱이 종료됩니다.)
 ".venv\Scripts\python.exe" app.py
