@@ -233,6 +233,46 @@ def test_match_speaker():
     assert core.match_speaker("콜론 없는 줄", vm) == (None, "콜론 없는 줄")
 
 
+# ---------------- 고품질(Chatterbox) 모드 ----------------
+
+def test_chatterbox_langs_registered():
+    for label, code, base in [("영어 (고품질·감정)", "ce", "en"),
+                              ("일본어 (고품질·감정)", "cj", "ja"),
+                              ("한국어 (고품질·감정)", "ck", "ko")]:
+        assert label in core.LANGS, f"LANGS 에 {label} 이 있어야 함"
+        assert core.LANGS[label]["code"] == code
+        assert core.CHATTERBOX_CODES[code] == base
+        assert core.voices_for(code) == ["기본 목소리"]
+
+
+def test_supports_mix():
+    for code in ("a", "b", "j"):
+        assert core.supports_mix(code), f"{code} 는 목소리 섞기 지원"
+    for code in ("k", "ce", "cj", "ck"):
+        assert not core.supports_mix(code), f"{code} 는 목소리 섞기 미지원"
+
+
+def test_chatterbox_sample_rate_and_speed():
+    assert core.sample_rate_for("ce") == 24000
+    assert core.clamp_speed("ce", 1.7) == 1.0, "고품질 모드는 속도 미지원 -> 1.0 고정"
+
+
+def test_blend_chatterbox_raises():
+    try:
+        core.blend_voices("cj", "기본 목소리", "기본 목소리", 0.5)
+        assert False, "고품질 모드 blend 는 ValueError 여야 함"
+    except ValueError:
+        pass
+
+
+def test_cfg_for_emotion_mapping():
+    import chatterbox_engine as cb
+    assert cb.cfg_for_emotion(0.3) == 0.5, "감정 0.5 이하 -> cfg 0.5"
+    assert cb.cfg_for_emotion(0.5) == 0.5
+    assert cb.cfg_for_emotion(0.8) == 0.3, "감정 0.8 -> cfg 0.3"
+    assert 0.3 < cb.cfg_for_emotion(0.65) < 0.5, "중간값은 선형 보간"
+
+
 # ---------------- 쉼 인접 가장자리 트림 ----------------
 
 def test_trim_edge_sides():

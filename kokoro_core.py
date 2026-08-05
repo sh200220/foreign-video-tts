@@ -1,10 +1,12 @@
 """
-TTS 공용 코어 (Kokoro + Supertonic)
-====================================
+TTS 공용 코어 (Kokoro + Supertonic + Chatterbox)
+=================================================
 CLI(tts.py)와 웹 UI(app.py)가 함께 사용하는 음성 생성 핵심 로직.
-영어·일본어는 Kokoro-82M, 한국어는 Supertonic(supertonic_engine 모듈)으로 합성한다.
+영어·일본어는 Kokoro-82M, 한국어는 Supertonic(supertonic_engine),
+고품질·감정 모드는 Chatterbox(chatterbox_engine, 별도 venv 워커)로 합성한다.
 
-라이선스: Kokoro(Apache 2.0), Supertonic(코드 MIT/모델 OpenRAIL-M) — 모두 상업적 사용 가능.
+라이선스: Kokoro(Apache 2.0), Supertonic(코드 MIT/모델 OpenRAIL-M),
+Chatterbox(MIT) — 모두 상업적 사용 가능.
 """
 
 import re
@@ -12,18 +14,23 @@ from pathlib import Path
 
 import numpy as np
 
+import chatterbox_engine
 import supertonic_engine
 
-SAMPLE_RATE = 24000  # Kokoro 출력 샘플레이트(Hz). 한국어는 sample_rate_for() 참고.
+SAMPLE_RATE = 24000  # Kokoro 출력 샘플레이트(Hz). 언어별로는 sample_rate_for() 참고.
 
 # 표시 이름 -> lang_code / 기본 목소리
 #   'a' = American English, 'b' = British English, 'j' = Japanese (Kokoro)
 #   'k' = Korean (Supertonic)
+#   'ce'/'cj'/'ck' = 고품질·감정 모드 (Chatterbox: 영/일/한)
 LANGS = {
     "영어 (미국)": {"code": "a", "default_voice": "af_heart"},
     "영어 (영국)": {"code": "b", "default_voice": "bf_emma"},
     "일본어":      {"code": "j", "default_voice": "jf_alpha"},
     "한국어":      {"code": "k", "default_voice": "F1"},
+    "영어 (고품질·감정)":   {"code": "ce", "default_voice": "기본 목소리"},
+    "일본어 (고품질·감정)": {"code": "cj", "default_voice": "기본 목소리"},
+    "한국어 (고품질·감정)": {"code": "ck", "default_voice": "기본 목소리"},
 }
 
 # Kokoro-82M 목소리 목록 (hexgrad/Kokoro-82M voices/ 기준).
@@ -38,22 +45,44 @@ VOICES = {
           "bm_daniel", "bm_fable", "bm_george", "bm_lewis"],
     "j": ["jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo"],
     "k": list(supertonic_engine.VOICES),
+    "ce": list(chatterbox_engine.VOICES),
+    "cj": list(chatterbox_engine.VOICES),
+    "ck": list(chatterbox_engine.VOICES),
 }
 
-SUPERTONIC_CODES = {"k": supertonic_engine.LANG}  # 내부 코드 -> supertonic 언어 코드
+SUPERTONIC_CODES = {"k": supertonic_engine.LANG}   # 내부 코드 -> supertonic 언어 코드
+CHATTERBOX_CODES = dict(chatterbox_engine.LANGS)   # 내부 코드 -> chatterbox 언어 코드
 
 
 def is_supertonic(lang_code):
     return lang_code in SUPERTONIC_CODES
 
 
+def is_chatterbox(lang_code):
+    return lang_code in CHATTERBOX_CODES
+
+
+def supports_mix(lang_code):
+    """목소리 섞기는 스타일 텐서를 쓰는 Kokoro 언어에서만 가능."""
+    return not (is_supertonic(lang_code) or is_chatterbox(lang_code))
+
+
 def sample_rate_for(lang_code):
-    """엔진별 출력 샘플레이트 (Kokoro 24k / Supertonic 44.1k)."""
-    return supertonic_engine.SAMPLE_RATE if is_supertonic(lang_code) else SAMPLE_RATE
+    """엔진별 출력 샘플레이트 (Kokoro/Chatterbox 24k / Supertonic 44.1k)."""
+    if is_supertonic(lang_code):
+        return supertonic_engine.SAMPLE_RATE
+    if is_chatterbox(lang_code):
+        return chatterbox_engine.SAMPLE_RATE
+    return SAMPLE_RATE
 
 
 def clamp_speed(lang_code, speed):
-    """엔진 허용 범위로 속도 보정. Supertonic 은 0.7~2.0 만 지원."""
+    """엔진 허용 범위로 속도 보정.
+
+    Supertonic 은 0.7~2.0 만 지원, Chatterbox 는 속도 파라미터가 없어 1.0 고정
+    (대신 감정 강도에 따라 cfg 로 페이스를 보정한다)."""
+    if is_chatterbox(lang_code):
+        return 1.0
     s = float(speed or 1.0)
     if is_supertonic(lang_code):
         return min(supertonic_engine.MAX_SPEED, max(supertonic_engine.MIN_SPEED, s))
@@ -79,10 +108,13 @@ def _to_numpy(audio):
     return np.asarray(audio)
 
 
-def _synth_line(line_text, lang_code, voice, speed):
+def _synth_line(line_text, lang_code, voice, speed, emotion=None):
     """엔진에 상관없이 '한 줄'을 합성해 float32 1-D 배열 반환."""
     if is_supertonic(lang_code):
         return supertonic_engine.synth_line(line_text, voice, speed)
+    if is_chatterbox(lang_code):
+        e = chatterbox_engine.DEFAULT_EMOTION if emotion is None else float(emotion)
+        return chatterbox_engine.synth_line(line_text, lang_code, e)
     pipe = get_pipeline(lang_code)
     chunks = [_to_numpy(r[2]).astype("float32") for r in pipe(line_text, voice=voice, speed=speed)]
     return np.concatenate(chunks) if chunks else np.zeros(0, dtype="float32")
@@ -111,11 +143,13 @@ def _trim_edge(audio, sr, lead=False, trail=False, thresh=0.008, fade_ms=8):
     return out
 
 
-def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_map=None):
+def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_map=None,
+                        emotion=None):
     """텍스트 -> (audio_np, sample_rate, segments). 줄 단위 렌더 루프.
 
     segments = [(자막텍스트, 시작초, 끝초)] — 자막에는 화자 접두사·쉼 태그를 뺀다.
     voice_map: 대화 모드 {'이름': 목소리} — '이름:' 줄을 그 목소리로 읽는다.
+    emotion: 고품질(Chatterbox) 모드의 감정 강도(0.25~0.8). 다른 엔진은 무시.
     [쉼:초] 태그 위치에는 무음을 넣는다(자막 구간은 말이 시작~끝나는 부분만).
     gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
 
@@ -126,6 +160,8 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
         raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
     sr = sample_rate_for(lang_code)
     speed = clamp_speed(lang_code, speed)
+    if is_chatterbox(lang_code):
+        voice_map = None            # 내장 목소리 1개뿐 — 대화 모드 무시(도움말에 명시)
     if voice_map:
         valid = voices_for(lang_code)
         for name, v in voice_map.items():
@@ -156,7 +192,7 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
                 parts.append(np.zeros(n, dtype="float32"))
                 cursor += n / sr
             else:
-                chunk = _synth_line(val, lang_code, line_voice, speed)
+                chunk = _synth_line(val, lang_code, line_voice, speed, emotion)
                 # 쉼과 맞닿은 가장자리는 무음을 잘라 지정한 쉼 길이를 정확히 유지
                 chunk = _trim_edge(
                     chunk, sr,
@@ -178,9 +214,9 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
     return np.concatenate(parts), sr, segments
 
 
-def synthesize(text, lang_code, voice, speed=1.0):
+def synthesize(text, lang_code, voice, speed=1.0, emotion=None):
     """텍스트 -> (audio_np, sample_rate). 빈 텍스트면 ValueError. (segments 없는 래퍼)"""
-    audio, sr, _ = synthesize_segments(text, lang_code, voice, speed)
+    audio, sr, _ = synthesize_segments(text, lang_code, voice, speed, emotion=emotion)
     return audio, sr
 
 
@@ -383,9 +419,9 @@ def blend_voices(lang_code, voice_a, voice_b, ratio):
     """같은 언어의 두 프리셋 목소리를 섞은 스타일 텐서 반환.
 
     결과 텐서를 synthesize(text, lang_code, <이 텐서>, speed) 의 voice 로 넘기면 된다.
-    Kokoro 전용 — 한국어(Supertonic)는 지원하지 않는다."""
-    if is_supertonic(lang_code):
-        raise ValueError("목소리 섞기는 한국어에서는 지원되지 않습니다 (Kokoro 전용 기능).")
+    Kokoro 전용 — 한국어(Supertonic)·고품질 모드(Chatterbox)는 지원하지 않는다."""
+    if not supports_mix(lang_code):
+        raise ValueError("목소리 섞기는 이 언어에서는 지원되지 않습니다 (Kokoro 전용 기능).")
     pipe = get_pipeline(lang_code)
     return blend_style(pipe.load_voice(voice_a), pipe.load_voice(voice_b), ratio)
 

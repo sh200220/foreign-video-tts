@@ -1,0 +1,136 @@
+"""
+Chatterbox 고품질 TTS 엔진 래퍼 (메인 venv 쪽)
+===============================================
+kokoro_core 가 고품질 모드(lang_code 'ce'/'cj'/'ck')일 때 합성을 위임한다.
+
+Chatterbox 는 의존성이 본 앱과 충돌하므로 별도 가상환경(.venv-chatterbox)에
+설치하고, 이 모듈이 상주 워커(chatterbox_worker.py)를 서브프로세스로 띄워
+JSON 라인 프로토콜로 통신한다. 워커는 모델을 1회만 로드하고 앱이 살아있는
+동안 재사용된다(앱 종료 시 stdin 이 닫혀 함께 종료).
+
+장치: 워커가 CUDA 가능하면 GPU(동업자 PC), 아니면 CPU(느림 — 배치용).
+라이선스: Chatterbox(MIT, 상업 사용 가능). 출력에 비가청 워터마크 포함.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
+import numpy as np
+
+SAMPLE_RATE = 24000                       # Chatterbox(S3Gen) 출력 샘플레이트(Hz)
+LANGS = {"ce": "en", "cj": "ja", "ck": "ko"}   # 내부 코드 -> chatterbox 언어 코드
+VOICES = ["기본 목소리"]                   # 내장 기본 화자 1개 (클로닝은 추후)
+DEFAULT_EMOTION = 0.5                     # exaggeration 기본값
+EMOTION_MIN, EMOTION_MAX = 0.25, 0.8      # UI 슬라이더 권장 범위
+
+_ROOT = Path(__file__).resolve().parent
+_VENV_PY = _ROOT / (".venv-chatterbox/Scripts/python.exe" if sys.platform == "win32"
+                    else ".venv-chatterbox/bin/python")
+_WORKER = _ROOT / "chatterbox_worker.py"
+_TMP = Path(tempfile.gettempdir()) / "foreign-video-tts-hq"
+
+_proc = None          # 상주 워커 프로세스
+_device = None        # 워커가 보고한 장치 ("cuda"/"cpu")
+
+READY_TIMEOUT_SEC = 1800    # 첫 실행은 모델(~3GB) 자동 다운로드 때문에 오래 걸릴 수 있음
+
+
+def cfg_for_emotion(emotion):
+    """감정 강도에 맞는 cfg_weight (감정↑ 이면 말이 빨라지므로 cfg 를 낮춰 보정).
+
+    공식 권장 조합을 선형화: 감정 0.5 이하 -> 0.5, 감정 0.8 -> 0.3."""
+    e = float(emotion)
+    return round(min(0.5, max(0.3, 0.5 - max(0.0, e - 0.5) * (2.0 / 3.0))), 3)
+
+
+def _spawn():
+    global _proc, _device
+    if not _VENV_PY.exists():
+        raise RuntimeError(
+            "고품질 모드가 아직 설치되지 않았습니다. 폴더의 "
+            "'SETUP-고품질모드' 파일을 한 번 실행해 주세요. "
+            "(첫 사용 시 모델 자동 다운로드로 인터넷이 필요합니다)")
+    proc = subprocess.Popen(
+        [str(_VENV_PY), str(_WORKER)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        encoding="utf-8", errors="replace", cwd=str(_ROOT))
+    line = proc.stdout.readline()          # ready 대기 (모델 로드/다운로드)
+    try:
+        info = json.loads(line) if line else {}
+    except json.JSONDecodeError:
+        info = {}
+    if not info.get("ready"):
+        proc.kill()
+        raise RuntimeError(
+            "고품질 모드 준비에 실패했습니다: "
+            f"{info.get('error', '워커가 응답하지 않습니다')} "
+            "(첫 사용이면 인터넷 연결을 확인하고 다시 시도해 주세요)")
+    if int(info.get("sr", SAMPLE_RATE)) != SAMPLE_RATE:
+        proc.kill()
+        raise RuntimeError(f"예상치 못한 샘플레이트: {info.get('sr')}")
+    _proc, _device = proc, info.get("device")
+    return _proc
+
+
+def _get_proc():
+    global _proc
+    if _proc is None or _proc.poll() is not None:
+        _proc = None
+        _spawn()
+    return _proc
+
+
+def device():
+    """마지막으로 확인된 합성 장치 ("cuda"/"cpu"/None=미기동)."""
+    return _device
+
+
+def shutdown():
+    """상주 워커 종료 (테스트/명시적 정리용; 앱 종료 시엔 자동으로 닫힘)."""
+    global _proc
+    if _proc is not None and _proc.poll() is None:
+        try:
+            _proc.stdin.close()
+            _proc.wait(timeout=10)
+        except Exception:
+            _proc.kill()
+    _proc = None
+
+
+def synth_line(text, lang_code, emotion=DEFAULT_EMOTION):
+    """한 줄 합성 -> float32 1-D numpy. lang_code 는 'ce'/'cj'/'ck'."""
+    import soundfile as sf
+    _TMP.mkdir(parents=True, exist_ok=True)
+    out = _TMP / f"line_{uuid.uuid4().hex}.wav"
+    req = {"text": text, "lang": LANGS[lang_code],
+           "exaggeration": float(emotion), "cfg": cfg_for_emotion(emotion),
+           "out": str(out)}
+    proc = _get_proc()
+    try:
+        proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+    except OSError as e:
+        shutdown()
+        raise RuntimeError(f"고품질 워커와의 통신이 끊겼습니다: {e}. 다시 시도해 주세요.")
+    if not line:
+        shutdown()
+        raise RuntimeError("고품질 워커가 종료됐습니다. 다시 시도해 주세요. "
+                           "(메모리가 부족하면 다른 프로그램을 닫아 보세요)")
+    res = json.loads(line)
+    if not res.get("ok"):
+        raise RuntimeError(f"고품질 합성 실패: {res.get('error')}")
+    try:
+        audio, _sr = sf.read(str(out), dtype="float32")
+        return audio.reshape(-1)
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
