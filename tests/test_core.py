@@ -328,6 +328,30 @@ def test_chatterbox_dialogue_validation():
         assert "가능한 목소리" in str(e)
 
 
+def test_resample_ratio():
+    audio = np.ones(24000, dtype="float32")            # 1초 @24k
+    out = core.resample(audio, 24000, 44100)
+    assert abs(len(out) - 44100) <= 2, f"리샘플 길이: {len(out)}"
+    assert core.resample(audio, 24000, 24000) is not None
+    assert len(core.resample(np.zeros(0, dtype='float32'), 24000, 44100)) == 0
+
+
+def test_dialogue_per_speaker_language_validation():
+    """화자별 언어: ('언어코드', '목소리') 값 검증 — 모델 로드 전에 잘못을 잡는다."""
+    try:
+        core.synthesize_segments("A: hi", "a", "af_heart",
+                                 voice_map={"A": ("zz", "af_heart")})
+        assert False, "잘못된 언어 코드는 ValueError 여야 함"
+    except ValueError as e:
+        assert "언어" in str(e)
+    try:
+        core.synthesize_segments("A: hi", "a", "af_heart",
+                                 voice_map={"A": ("k", "없는목소리")})
+        assert False, "그 언어에 없는 목소리는 ValueError 여야 함"
+    except ValueError as e:
+        assert "가능한 목소리" in str(e)
+
+
 def test_has_speech():
     assert core.has_speech("안녕하세요")
     assert core.has_speech("hello!")

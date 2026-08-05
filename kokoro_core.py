@@ -164,15 +164,23 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
     text = (text or "").strip()
     if not text:
         raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
-    sr = sample_rate_for(lang_code)
-    speed = clamp_speed(lang_code, speed)
+    speed = float(speed or 1.0)              # 엔진별 클램프는 줄(화자) 단위로 적용
+    # 대화 모드 검증: voice_map 값은 '목소리' 또는 ('언어코드', '목소리') —
+    # 화자별로 다른 언어(엔진)를 쓸 수 있고, 샘플레이트가 다르면 높은 쪽으로 통일한다.
+    valid_codes = {info["code"] for info in LANGS.values()}
+    langs_used = {lang_code}
     if voice_map:
-        valid = voices_for(lang_code)
         for name, v in voice_map.items():
-            if v not in valid:
+            v_lang, v_voice = v if isinstance(v, tuple) else (lang_code, v)
+            if v_lang not in valid_codes:
+                raise ValueError(f"화자 '{name}'의 언어가 잘못됐습니다: {v_lang}")
+            valid = voices_for(v_lang)
+            if v_voice not in valid:
                 raise ValueError(
-                    f"화자 '{name}'의 목소리 '{v}'가 현재 언어에 없습니다. "
+                    f"화자 '{name}'의 목소리 '{v_voice}'가 그 언어에 없습니다. "
                     f"가능한 목소리: {', '.join(valid)}")
+            langs_used.add(v_lang)
+    sr = max(sample_rate_for(c) for c in langs_used)
     gap_len = int(sr * max(0.0, gap_sec))
     lines = [ln.strip() for ln in re.split(r"\n+", text) if ln.strip()]
     if voice_map:       # 대화 모드: 화자 유지(sticky) 규칙으로 줄마다 목소리 배정
@@ -187,7 +195,14 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
             parts.append(np.zeros(gap_len, dtype="float32"))
             cursor += gap_len / sr
         first = False
-        line_voice = voice if line_voice_name is None else line_voice_name
+        if line_voice_name is None:                       # 기본 목소리(현재 언어)
+            line_lang, line_voice = lang_code, voice
+        elif isinstance(line_voice_name, tuple):          # 화자별 언어 지정
+            line_lang, line_voice = line_voice_name
+        else:
+            line_lang, line_voice = lang_code, line_voice_name
+        line_sr = sample_rate_for(line_lang)
+        line_speed = clamp_speed(line_lang, speed)
         seg_start, seg_end = None, cursor
         pieces = split_pause_tags(spoken)
         for i, (kind, val) in enumerate(pieces):
@@ -198,7 +213,9 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
             elif not has_speech(val):
                 continue                        # 부호·공백뿐인 조각은 잡음 방지 위해 건너뜀
             else:
-                chunk = _synth_line(val, lang_code, line_voice, speed, emotion, pace)
+                chunk = _synth_line(val, line_lang, line_voice, line_speed, emotion, pace)
+                if line_sr != sr:               # 엔진 샘플레이트가 다르면 통일(리샘플)
+                    chunk = resample(chunk, line_sr, sr)
                 # 쉼과 맞닿은 가장자리는 무음을 잘라 지정한 쉼 길이를 정확히 유지
                 chunk = _trim_edge(
                     chunk, sr,
@@ -314,6 +331,17 @@ def has_speech(piece):
     """말할 내용(글자·숫자)이 있는지. 문장부호·공백뿐인 조각을 합성에 넣으면
     엔진(특히 고품질 모드)이 잡음을 만들어내므로 이걸로 걸러 건너뛴다."""
     return bool(re.search(r"[^\W_]", piece or ""))
+
+
+def resample(audio, src_sr, dst_sr):
+    """샘플레이트 변환 (화자별 언어가 섞여 엔진 출력 레이트가 다를 때 통일용)."""
+    if src_sr == dst_sr or not len(audio):
+        return np.asarray(audio, dtype="float32")
+    from math import gcd
+    from scipy.signal import resample_poly
+    g = gcd(int(dst_sr), int(src_sr))
+    out = resample_poly(np.asarray(audio, dtype="float64"), dst_sr // g, src_sr // g)
+    return out.astype("float32")
 
 
 # --- 대화 모드: 등록된 '이름:' 줄에서 화자가 시작되고 다음 표시까지 유지된다 ---

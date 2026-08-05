@@ -117,14 +117,18 @@ if not _spk_raw and (_s.get("dlg_map") or "").strip():
         _spk_raw = [[k, v] for k, v in core.parse_voice_map(_s["dlg_map"]).items()]
     except ValueError:
         _spk_raw = []
-INIT_SPK = [["", None] for _ in range(4)]
+FOLLOW_LANG = "현재 언어"    # 화자 슬롯 언어의 기본값 — 위 '언어' 선택을 따른다
+INIT_SPK = [["", None, FOLLOW_LANG] for _ in range(4)]
 for _i, _item in enumerate(_spk_raw[:4]):
     try:
         _nm, _vv = str(_item[0]).strip(), str(_item[1]).strip()
+        _ll = str(_item[2]).strip() if len(_item) > 2 else FOLLOW_LANG
     except (TypeError, IndexError):
         continue
     if _nm and _nm != core.RESET_NAME:
-        INIT_SPK[_i] = [_nm, _vv if _vv in INIT_VOICES else None]
+        _ll = _ll if _ll in LANG_LABELS else FOLLOW_LANG
+        _vs = INIT_VOICES if _ll == FOLLOW_LANG else core.voices_for(core.LANGS[_ll]["code"])
+        INIT_SPK[_i] = [_nm, _vv if _vv in _vs else None, _ll]
 try:
     INIT_SRT_MAX = int(_s.get("srt_max", 0))     # 자막 한 줄 최대 글자 수 (0=제한 없음)
 except (TypeError, ValueError):
@@ -269,17 +273,19 @@ footer{display:none!important;}
 """
 
 
-def on_lang_change(lang_label, mix_on_val):
+def on_lang_change(lang_label, mix_on_val, sl1, sl2, sl3, sl4):
     """언어 바뀌면 목소리 1·2 드롭다운 갱신 + 언어별 지원 기능 반영.
 
     - 목소리 섞기: Kokoro 언어만 → 아니면 체크박스·믹스 행 숨김
-    - 고품질(Chatterbox) 모드: 속도 슬라이더 대신 감정 강도 슬라이더 표시"""
+    - 고품질(Chatterbox) 모드: 속도 슬라이더 대신 감정·페이스 슬라이더 표시
+    - 화자 슬롯: '현재 언어'를 따르는 슬롯만 목소리 목록을 새 언어로 교체"""
     info = core.LANGS[lang_label]
     code = info["code"]
     voices = core.voices_for(code)
     can_mix = core.supports_mix(code)
     is_cb = core.is_chatterbox(code)
-    slot_upd = [gr.update(choices=voices, value=None) for _ in range(4)]  # 화자 슬롯도 언어 따라
+    slot_upd = [gr.update(choices=voices, value=None) if sl == FOLLOW_LANG else gr.update()
+                for sl in (sl1, sl2, sl3, sl4)]
     return (gr.update(choices=voices, value=info["default_voice"]),
             gr.update(choices=voices, value=_second_voice(voices)),
             gr.update(visible=can_mix),
@@ -317,6 +323,7 @@ def apply_replacements(text, rules):
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
              dlg_on, spk_n1, spk_n2, spk_n3, spk_n4, spk_v1, spk_v2, spk_v3, spk_v4,
+             spk_l1, spk_l2, spk_l3, spk_l4,
              srt_max, emotion, pace, takes, rules_dict, progress=gr.Progress()):
     CANCEL_EVENT.clear()
     code = core.LANGS[lang_label]["code"]
@@ -324,7 +331,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     takes_n = int(takes or 1)
     rules_all = dict(rules_dict or {})
     rules_all[code] = replace_rules or ""    # 현재 언어의 발음 교정 규칙 보관
-    spk_pairs = [(spk_n1, spk_v1), (spk_n2, spk_v2), (spk_n3, spk_v3), (spk_n4, spk_v4)]
+    spk_pairs = [(spk_n1, spk_v1, spk_l1), (spk_n2, spk_v2, spk_l2),
+                 (spk_n3, spk_v3, spk_l3), (spk_n4, spk_v4, spk_l4)]
 
     # 마지막 선택을 기억(다음 실행 때 복원)
     save_settings({"lang": lang_label, "voice": voice, "voice2": voice2, "speed": speed,
@@ -334,7 +342,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "replace_rules_by_lang": rules_all, "trim_on": bool(trim_on),
                    "scene_split": bool(scene_split), "autosave": bool(autosave),
                    "dlg_on": bool(dlg_on),
-                   "spk": [[(n or "").strip(), v or ""] for n, v in spk_pairs],
+                   "spk": [[(n or "").strip(), v or "", ll or FOLLOW_LANG]
+                           for n, v, ll in spk_pairs],
                    "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5),
                    "pace": float(pace or 0.5), "takes": takes_n})
 
@@ -343,7 +352,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     vmap = None
     if dlg_on:
         vmap = {}
-        for nm, vv in spk_pairs:
+        for nm, vv, ll in spk_pairs:
             nm = (nm or "").strip()
             if not nm:
                 continue
@@ -352,7 +361,10 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                                "화자 이름으로 쓸 수 없어요.")
             if not vv:
                 raise gr.Error(f"화자 '{nm}'의 목소리를 골라 주세요.")
-            vmap[nm] = vv
+            if ll and ll != FOLLOW_LANG:           # 화자별 언어 지정 -> (언어코드, 목소리)
+                vmap[nm] = (core.LANGS[ll]["code"], vv)
+            else:
+                vmap[nm] = vv
         vmap = vmap or None
     use_mix = mix_on and core.supports_mix(code) and not vmap
 
@@ -635,15 +647,22 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                         "(긴 대사는 이름 한 번만). **기본:** 이라고 쓰면 기본 목소리(내레이션)로 "
                         "돌아옵니다. 자막에는 이름이 빠지고, 대화 모드 중 목소리 섞기는 무시돼요.",
                         elem_classes="hint")
-            spk_names, spk_voices, spk_btns = [], [], []
+            spk_names, spk_voices, spk_langs, spk_btns = [], [], [], []
             for _si in range(4):
                 with gr.Row():
                     _n = gr.Textbox(value=INIT_SPK[_si][0], label=f"화자 {_si + 1} 이름",
                                     placeholder="예: 민수", scale=2)
-                    _v = gr.Dropdown(INIT_VOICES, value=INIT_SPK[_si][1],
-                                     label="목소리", scale=3)
+                    _l = gr.Dropdown([FOLLOW_LANG] + LANG_LABELS, value=INIT_SPK[_si][2],
+                                     label="언어", scale=2)
+                    _sv = (INIT_VOICES if INIT_SPK[_si][2] == FOLLOW_LANG
+                           else core.voices_for(core.LANGS[INIT_SPK[_si][2]]["code"]))
+                    _v = gr.Dropdown(_sv, value=INIT_SPK[_si][1], label="목소리", scale=3)
                     _b = gr.Button("듣기", size="sm", scale=0, min_width=64)
-                    spk_names.append(_n); spk_voices.append(_v); spk_btns.append(_b)
+                    spk_names.append(_n); spk_voices.append(_v)
+                    spk_langs.append(_l); spk_btns.append(_b)
+            gr.Markdown("화자마다 **언어**를 다르게 하면 한 대본에서 한국어·영어·일본어를 섞을 수 "
+                        "있어요 (샘플레이트는 자동으로 맞춰짐). ‘현재 언어’ = 위의 언어 선택을 따름.",
+                        elem_classes="hint")
             detect_btn = gr.Button("대본에서 화자 자동 인식 — ‘이름:’ 을 찾아 빈 슬롯 채우기",
                                    size="sm")
         with gr.Accordion("파일로 만들기 — .txt 여러 개 올리면 한 번에 (선택)", open=False):
@@ -711,8 +730,16 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     rules_state = gr.State(dict(_RULES_BY_LANG))   # 언어코드 -> 발음 교정 규칙
     prev_lang_state = gr.State(INIT_LANG)          # 발음 교정 스왑용 직전 언어
 
-    lang.change(on_lang_change, inputs=[lang, mix_on],
+    lang.change(on_lang_change, inputs=[lang, mix_on] + spk_langs,
                 outputs=[voice, voice2, mix_on, mix_row, speed, hq_row] + spk_voices)
+
+    def _slot_lang_change(slot_lang, main_lang):
+        """화자 슬롯 언어 변경 → 그 슬롯의 목소리 목록을 해당 언어 것으로 교체."""
+        label = main_lang if slot_lang == FOLLOW_LANG else slot_lang
+        return gr.update(choices=core.voices_for(core.LANGS[label]["code"]), value=None)
+
+    for _sl, _sv in zip(spk_langs, spk_voices):
+        _sl.change(_slot_lang_change, inputs=[_sl, lang], outputs=_sv)
 
     def swap_rules(new_lang, prev_lang, cur_rules, rules_dict):
         """언어를 바꾸면 발음 교정 규칙도 그 언어 것으로 교체 (직전 언어 것은 보관)."""
@@ -731,27 +758,34 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     dlg_on.change(lambda on: gr.update(visible=on), inputs=dlg_on, outputs=dlg_col)
 
     def refresh_voices(lang_label, cur_voice, cur_voice2, *slot_vals):
-        """참고목소리 폴더를 다시 읽어 모든 목소리 드롭다운 갱신 (선택 값은 가능하면 유지)."""
+        """참고목소리 폴더를 다시 읽어 모든 목소리 드롭다운 갱신 (선택 값은 가능하면 유지).
+
+        slot_vals = 슬롯 목소리 4개 + 슬롯 언어 4개."""
         voices = core.voices_for(core.LANGS[lang_label]["code"])
         keep = cur_voice if cur_voice in voices else core.LANGS[lang_label]["default_voice"]
         keep2 = cur_voice2 if cur_voice2 in voices else _second_voice(voices)
-        slot_upd = [gr.update(choices=voices, value=(v if v in voices else None))
-                    for v in slot_vals]
+        s_voices, s_langs = slot_vals[:4], slot_vals[4:8]
+        slot_upd = []
+        for v, sl in zip(s_voices, s_langs):
+            label = lang_label if (sl or FOLLOW_LANG) == FOLLOW_LANG else sl
+            vs = core.voices_for(core.LANGS[label]["code"])
+            slot_upd.append(gr.update(choices=vs, value=(v if v in vs else None)))
         return [gr.update(choices=voices, value=keep),
                 gr.update(choices=voices, value=keep2)] + slot_upd
 
-    refresh_btn.click(refresh_voices, inputs=[lang, voice, voice2] + spk_voices,
+    refresh_btn.click(refresh_voices, inputs=[lang, voice, voice2] + spk_voices + spk_langs,
                       outputs=[voice, voice2] + spk_voices)
 
-    def slot_preview(lang_label, slot_voice, speed_val, emotion_val, pace_val):
-        """화자 슬롯의 목소리를 짧은 샘플로 미리듣기."""
+    def slot_preview(lang_label, slot_lang, slot_voice, speed_val, emotion_val, pace_val):
+        """화자 슬롯의 목소리를 그 슬롯의 언어로 짧게 미리듣기."""
         if not slot_voice:
             raise gr.Error("이 화자의 목소리를 먼저 골라 주세요.")
-        return preview(lang_label, slot_voice, speed_val, False, None, 0.5,
+        label = lang_label if (slot_lang or FOLLOW_LANG) == FOLLOW_LANG else slot_lang
+        return preview(label, slot_voice, speed_val, False, None, 0.5,
                        emotion_val, pace_val)
 
-    for _b, _v in zip(spk_btns, spk_voices):
-        _b.click(slot_preview, inputs=[lang, _v, speed, emotion, pace],
+    for _b, _sl, _v in zip(spk_btns, spk_langs, spk_voices):
+        _b.click(slot_preview, inputs=[lang, _sl, _v, speed, emotion, pace],
                  outputs=preview_audio)
 
     def save_recording(rec, name, lang_label, cur_voice, cur_voice2, *slot_vals):
@@ -782,7 +816,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         return refresh_voices(lang_label, cur_voice, cur_voice2, *slot_vals)
 
     rec_save.click(save_recording,
-                   inputs=[rec_audio, rec_name, lang, voice, voice2] + spk_voices,
+                   inputs=[rec_audio, rec_name, lang, voice, voice2] + spk_voices + spk_langs,
                    outputs=[voice, voice2] + spk_voices)
 
     _NAME_PREFIX = re.compile(r"^\s*([^\s:：][^:：]{0,19}?)\s*[:：]")
@@ -827,7 +861,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
-                      autosave, dlg_on] + spk_names + spk_voices +
+                      autosave, dlg_on] + spk_names + spk_voices + spk_langs +
                      [srt_max, emotion, pace, takes, rules_state],
               outputs=[audio_out, status, last_saved, pending_state,
                        scenes_state, scene_dd, scene_row, rules_state],
@@ -837,7 +871,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     def regen_scene(scene_label, scenes, lang_label, voice, speed, filename, folder, fmt,
                     mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules,
                     trim_on, dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
-                    spk_v1, spk_v2, spk_v3, spk_v4, srt_max, emotion, pace, rules_dict):
+                    spk_v1, spk_v2, spk_v3, spk_v4, spk_l1, spk_l2, spk_l3, spk_l4,
+                    srt_max, emotion, pace, rules_dict):
         """선택한 장면 하나만 같은 설정으로 다시 생성 (파일명_NN (2).wav 처럼 새 파일로)."""
         if not scenes or not scene_label:
             raise gr.Error("다시 만들 장면을 골라 주세요. (먼저 '장면별로 나눠 저장'으로 생성)")
@@ -848,14 +883,15 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                        folder, fmt, mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec,
                        norm_mode, replace_rules, trim_on, False, True,
                        dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
-                       spk_v1, spk_v2, spk_v3, spk_v4, srt_max, emotion, pace, 1, rules_dict,
+                       spk_v1, spk_v2, spk_v3, spk_v4, spk_l1, spk_l2, spk_l3, spk_l4,
+                       srt_max, emotion, pace, 1, rules_dict,
                        progress=lambda *a, **k: None)
         return out[0], out[1], out[2], out[3]     # 장면 목록·드롭다운은 그대로 유지
 
     scene_btn.click(regen_scene,
                     inputs=[scene_dd, scenes_state, lang, voice, speed, filename, folder, fmt,
                             mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode,
-                            replace_rules, trim_on, dlg_on] + spk_names + spk_voices +
+                            replace_rules, trim_on, dlg_on] + spk_names + spk_voices + spk_langs +
                            [srt_max, emotion, pace, rules_state],
                     outputs=[audio_out, status, last_saved, pending_state],
                     show_progress_on=audio_out).then(
