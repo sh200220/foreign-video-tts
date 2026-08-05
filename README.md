@@ -86,14 +86,15 @@
 
 ## 🔄 업데이트 받기 (GitHub)
 
-동업자 PC에서 최신 버전을 받는 방법 — zip 재전달 불필요:
+최신 버전 받기 — zip 재전달·GitHub 계정·로그인 전부 불필요 (공개 저장소):
 
-1. **(소유자가 한 번)** GitHub 저장소 `Settings → Collaborators` 에서 동업자 GitHub 계정을 초대,
-   동업자는 이메일로 온 초대를 수락. *(저장소를 Public 으로 바꾸면 이 단계·로그인이 아예 필요 없습니다)*
-2. **(동업자)** 폴더의 **`UPDATE-Windows.bat`**(맥은 `UPDATE-Mac.command`) 더블클릭.
-   - 처음 한 번: Git 자동 설치 → 브라우저 GitHub 로그인 창이 뜨면 로그인(이후 기억됨).
+1. 폴더의 **`UPDATE-Windows.bat`**(맥은 `UPDATE-Mac.command`) 더블클릭.
+   - 처음 한 번은 Git이 자동 설치될 수 있습니다 → 안내가 나오면 한 번 더 더블클릭.
    - 이후: 더블클릭 한 번이면 최신 버전으로 갱신됩니다.
-3. 갱신 후 `START-Windows.bat` 실행 — 새로 필요한 패키지는 시작할 때 자동 설치됩니다.
+2. 갱신 후 `START-Windows.bat` 실행 — 새로 필요한 패키지는 시작할 때 자동 설치됩니다.
+
+처음 받는 PC라면: [Code → Download ZIP](https://github.com/sh200220/foreign-video-tts/archive/refs/heads/main.zip)
+을 풀고 `START-Windows.bat` 더블클릭이면 끝.
 
 주의: UPDATE 는 프로그램 파일을 최신으로 **덮어씁니다**(직접 고친 코드가 있다면 사라짐).
 생성한 음성(output)·설치 환경(.venv*)·개인 설정은 그대로 유지됩니다.
