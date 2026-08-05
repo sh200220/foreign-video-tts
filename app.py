@@ -112,8 +112,13 @@ try:
     INIT_EMOTION = float(_s.get("emotion", 0.5))    # 고품질 모드 감정 강도
 except (TypeError, ValueError):
     INIT_EMOTION = 0.5
-INIT_EMOTION = INIT_EMOTION if 0.25 <= INIT_EMOTION <= 0.8 else 0.5
-INIT_IS_CB = core.is_chatterbox(_init_code)         # 고품질 모드면 속도 대신 감정 슬라이더
+INIT_EMOTION = INIT_EMOTION if 0.0 <= INIT_EMOTION <= 1.0 else 0.5
+try:
+    INIT_PACE = float(_s.get("pace", 0.5))          # 고품질 모드 말 페이스(cfg)
+except (TypeError, ValueError):
+    INIT_PACE = 0.5
+INIT_PACE = INIT_PACE if 0.2 <= INIT_PACE <= 0.8 else 0.5
+INIT_IS_CB = core.is_chatterbox(_init_code)         # 고품질 모드면 속도 대신 감정·페이스 슬라이더
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -251,6 +256,7 @@ def on_lang_change(lang_label, mix_on_val):
             gr.update(visible=can_mix),
             gr.update(visible=can_mix and bool(mix_on_val)),
             gr.update(visible=not is_cb),
+            gr.update(visible=is_cb),
             gr.update(visible=is_cb))
 
 
@@ -281,7 +287,7 @@ def apply_replacements(text, rules):
 
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
-             dlg_on, dlg_map, srt_max, emotion, progress=gr.Progress()):
+             dlg_on, dlg_map, srt_max, emotion, pace, progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
 
@@ -292,7 +298,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "replace_rules": replace_rules or "", "trim_on": bool(trim_on),
                    "scene_split": bool(scene_split), "autosave": bool(autosave),
                    "dlg_on": bool(dlg_on), "dlg_map": dlg_map or "",
-                   "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5)})
+                   "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5),
+                   "pace": float(pace or 0.5)})
 
     # 대화 모드 화자 매핑 (형식 오류는 바로 안내). 대화 모드 중엔 목소리 섞기 무시.
     # 고품질 모드는 내장 목소리 1개라 대화 모드를 지원하지 않음(무시).
@@ -317,7 +324,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     def synth_one(content):
         audio, sr, segs = core.synthesize_segments(
             apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0,
-            voice_map=vmap, emotion=emotion)
+            voice_map=vmap, emotion=emotion, pace=pace)
         if trim_on:                          # 가장자리 무음 제거 → 자막 타이밍을 앞 trim 만큼 당김
             audio, lead = core.trim_fade(audio, sr)
             dur = len(audio) / sr
@@ -427,14 +434,14 @@ def update_recent(just_saved, recent):
     return md, combined
 
 
-def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio, emotion):
+def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio, emotion, pace):
     """선택한 목소리(또는 믹스)로 짧은 샘플을 합성해 메모리로 재생. 파일은 저장하지 않음."""
     code = core.LANGS[lang_label]["code"]
     use_mix = mix_on and core.supports_mix(code)
     try:
         voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if use_mix else voice
         audio, sr = core.synthesize(PREVIEW_TEXT.get(code, PREVIEW_TEXT["a"]), code, voice_arg,
-                                    speed, emotion=emotion)
+                                    speed, emotion=emotion, pace=pace)
     except (ValueError, RuntimeError) as e:
         raise gr.Error(str(e))
     # gr.Audio(type="numpy") 는 (sample_rate, 데이터) 튜플을 받음. int16 로 안전하게 변환.
@@ -494,10 +501,12 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "- **추가 옵션**: 잘못 읽는 단어 교정(발음 교정), 문단 사이 쉼 넣기.\n"
             "- **장면별로 나눠 저장**: 대본을 빈 줄로 나눠 장면마다 따로 파일로.\n"
             "- **한국어**: 첫 생성 때 모델을 자동 다운로드해요(인터넷 1회). 속도는 0.7 미만이면 0.7로 조정됩니다.\n"
-            "- **고품질·감정 모드**: 더 자연스러운 목소리 + **감정 강도** 슬라이더(차분~극적). "
+            "- **고품질·감정 모드**: 더 자연스러운 목소리 + **감정 강도**(차분~극적)와 "
+            "**말 페이스**(느긋~빠릿) 슬라이더로 직접 조절. 감정을 올리면 말이 빨라지는 "
+            "경향이 있으니 페이스를 낮춰 균형을 잡으면 좋아요. "
             "먼저 폴더의 `SETUP-고품질모드` 를 한 번 실행하세요(첫 사용 시 모델 ~3GB 다운로드). "
             "생성이 느린 대신 품질이 높고(그래픽카드 있으면 빠름), 목소리는 내장 1개라 "
-            "목소리 섞기·대화 모드·속도 조절은 지원하지 않아요.",
+            "목소리 섞기·대화 모드는 지원하지 않아요.",
             elem_classes="hint")
 
     with gr.Group(elem_classes="card"):
@@ -506,9 +515,12 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             voice = gr.Dropdown(INIT_VOICES, value=INIT_VOICE, label="목소리")
             speed = gr.Slider(0.5, 2.0, value=INIT_SPEED, step=0.05, label="속도",
                               info="1.0 = 보통", visible=not INIT_IS_CB)
-            emotion = gr.Slider(0.25, 0.8, value=INIT_EMOTION, step=0.05, label="감정 강도",
-                                info="0.3 = 차분 · 0.5 = 보통 · 0.7 = 극적",
+            emotion = gr.Slider(0.0, 1.0, value=INIT_EMOTION, step=0.05, label="감정 강도",
+                                info="0.3 = 차분 · 0.5 = 보통 · 0.7 = 극적 (높이면 말도 빨라져요)",
                                 visible=INIT_IS_CB)
+            pace = gr.Slider(0.2, 0.8, value=INIT_PACE, step=0.05, label="말 페이스",
+                             info="낮음 = 느긋·또박또박 · 높음 = 빠릿 (0.5 = 보통)",
+                             visible=INIT_IS_CB)
         mix_on = gr.Checkbox(value=INIT_MIX, visible=INIT_CAN_MIX,
                              label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
         with gr.Row(visible=INIT_MIX and INIT_CAN_MIX) as mix_row:
@@ -588,7 +600,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
 
     lang.change(on_lang_change, inputs=[lang, mix_on],
-                outputs=[voice, voice2, mix_on, mix_row, speed, emotion])
+                outputs=[voice, voice2, mix_on, mix_row, speed, emotion, pace])
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
@@ -596,7 +608,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                       visible=on and core.supports_mix(core.LANGS[lang_label]["code"])),
                   inputs=[mix_on, lang], outputs=mix_row)
     dlg_on.change(lambda on: gr.update(visible=on), inputs=dlg_on, outputs=dlg_col)
-    preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio, emotion],
+    preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio, emotion, pace],
                       outputs=preview_audio)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
     desktop_btn.click(lambda: str(Path.home() / "Desktop"), outputs=folder)
@@ -606,7 +618,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
-                      autosave, dlg_on, dlg_map, srt_max, emotion],
+                      autosave, dlg_on, dlg_map, srt_max, emotion, pace],
               outputs=[audio_out, status, last_saved, pending_state]).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
     save_btn.click(save_pending,

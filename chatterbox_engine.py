@@ -25,8 +25,10 @@ import numpy as np
 SAMPLE_RATE = 24000                       # Chatterbox(S3Gen) 출력 샘플레이트(Hz)
 LANGS = {"ce": "en", "cj": "ja", "ck": "ko"}   # 내부 코드 -> chatterbox 언어 코드
 VOICES = ["기본 목소리"]                   # 내장 기본 화자 1개 (클로닝은 추후)
-DEFAULT_EMOTION = 0.5                     # exaggeration 기본값
-EMOTION_MIN, EMOTION_MAX = 0.25, 0.8      # UI 슬라이더 권장 범위
+DEFAULT_EMOTION = 0.5                     # exaggeration 기본값 (0=밋밋 ~ 1=과장)
+EMOTION_MIN, EMOTION_MAX = 0.0, 1.0       # UI 슬라이더 범위
+DEFAULT_PACE = 0.5                        # cfg_weight 기본값 (낮음=느긋 ~ 높음=빠릿)
+PACE_MIN, PACE_MAX = 0.2, 0.8             # UI 슬라이더 범위
 
 _ROOT = Path(__file__).resolve().parent
 _VENV_PY = _ROOT / (".venv-chatterbox/Scripts/python.exe" if sys.platform == "win32"
@@ -54,14 +56,6 @@ def _read_json(proc, max_skip=50):
         except json.JSONDecodeError:
             continue
     return {}
-
-
-def cfg_for_emotion(emotion):
-    """감정 강도에 맞는 cfg_weight (감정↑ 이면 말이 빨라지므로 cfg 를 낮춰 보정).
-
-    공식 권장 조합을 선형화: 감정 0.5 이하 -> 0.5, 감정 0.8 -> 0.3."""
-    e = float(emotion)
-    return round(min(0.5, max(0.3, 0.5 - max(0.0, e - 0.5) * (2.0 / 3.0))), 3)
 
 
 def _spawn():
@@ -115,13 +109,16 @@ def shutdown():
     _proc = None
 
 
-def synth_line(text, lang_code, emotion=DEFAULT_EMOTION):
-    """한 줄 합성 -> float32 1-D numpy. lang_code 는 'ce'/'cj'/'ck'."""
+def synth_line(text, lang_code, emotion=DEFAULT_EMOTION, pace=DEFAULT_PACE):
+    """한 줄 합성 -> float32 1-D numpy. lang_code 는 'ce'/'cj'/'ck'.
+
+    emotion = exaggeration(표현 강도), pace = cfg_weight(낮음=느긋, 높음=빠릿).
+    자동 보정 없이 사용자가 준 값을 그대로 쓴다."""
     import soundfile as sf
     _TMP.mkdir(parents=True, exist_ok=True)
     out = _TMP / f"line_{uuid.uuid4().hex}.wav"
     req = {"text": text, "lang": LANGS[lang_code],
-           "exaggeration": float(emotion), "cfg": cfg_for_emotion(emotion),
+           "exaggeration": float(emotion), "cfg": float(pace),
            "out": str(out)}
     proc = _get_proc()
     try:

@@ -108,13 +108,14 @@ def _to_numpy(audio):
     return np.asarray(audio)
 
 
-def _synth_line(line_text, lang_code, voice, speed, emotion=None):
+def _synth_line(line_text, lang_code, voice, speed, emotion=None, pace=None):
     """엔진에 상관없이 '한 줄'을 합성해 float32 1-D 배열 반환."""
     if is_supertonic(lang_code):
         return supertonic_engine.synth_line(line_text, voice, speed)
     if is_chatterbox(lang_code):
         e = chatterbox_engine.DEFAULT_EMOTION if emotion is None else float(emotion)
-        return chatterbox_engine.synth_line(line_text, lang_code, e)
+        p = chatterbox_engine.DEFAULT_PACE if pace is None else float(pace)
+        return chatterbox_engine.synth_line(line_text, lang_code, e, p)
     pipe = get_pipeline(lang_code)
     chunks = [_to_numpy(r[2]).astype("float32") for r in pipe(line_text, voice=voice, speed=speed)]
     return np.concatenate(chunks) if chunks else np.zeros(0, dtype="float32")
@@ -144,12 +145,13 @@ def _trim_edge(audio, sr, lead=False, trail=False, thresh=0.008, fade_ms=8):
 
 
 def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_map=None,
-                        emotion=None):
+                        emotion=None, pace=None):
     """텍스트 -> (audio_np, sample_rate, segments). 줄 단위 렌더 루프.
 
     segments = [(자막텍스트, 시작초, 끝초)] — 자막에는 화자 접두사·쉼 태그를 뺀다.
     voice_map: 대화 모드 {'이름': 목소리} — '이름:' 줄을 그 목소리로 읽는다.
-    emotion: 고품질(Chatterbox) 모드의 감정 강도(0.25~0.8). 다른 엔진은 무시.
+    emotion/pace: 고품질(Chatterbox) 모드의 감정 강도(0~1)·말 페이스(0.2~0.8).
+    둘 다 사용자가 직접 조절하며(자동 보정 없음), 다른 엔진은 무시.
     [쉼:초] 태그 위치에는 무음을 넣는다(자막 구간은 말이 시작~끝나는 부분만).
     gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
 
@@ -192,7 +194,7 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
                 parts.append(np.zeros(n, dtype="float32"))
                 cursor += n / sr
             else:
-                chunk = _synth_line(val, lang_code, line_voice, speed, emotion)
+                chunk = _synth_line(val, lang_code, line_voice, speed, emotion, pace)
                 # 쉼과 맞닿은 가장자리는 무음을 잘라 지정한 쉼 길이를 정확히 유지
                 chunk = _trim_edge(
                     chunk, sr,
@@ -214,9 +216,10 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
     return np.concatenate(parts), sr, segments
 
 
-def synthesize(text, lang_code, voice, speed=1.0, emotion=None):
+def synthesize(text, lang_code, voice, speed=1.0, emotion=None, pace=None):
     """텍스트 -> (audio_np, sample_rate). 빈 텍스트면 ValueError. (segments 없는 래퍼)"""
-    audio, sr, _ = synthesize_segments(text, lang_code, voice, speed, emotion=emotion)
+    audio, sr, _ = synthesize_segments(text, lang_code, voice, speed,
+                                       emotion=emotion, pace=pace)
     return audio, sr
 
 

@@ -265,12 +265,11 @@ def test_blend_chatterbox_raises():
         pass
 
 
-def test_cfg_for_emotion_mapping():
+def test_chatterbox_control_ranges():
     import chatterbox_engine as cb
-    assert cb.cfg_for_emotion(0.3) == 0.5, "감정 0.5 이하 -> cfg 0.5"
-    assert cb.cfg_for_emotion(0.5) == 0.5
-    assert cb.cfg_for_emotion(0.8) == 0.3, "감정 0.8 -> cfg 0.3"
-    assert 0.3 < cb.cfg_for_emotion(0.65) < 0.5, "중간값은 선형 보간"
+    assert cb.EMOTION_MIN <= cb.DEFAULT_EMOTION <= cb.EMOTION_MAX
+    assert cb.PACE_MIN <= cb.DEFAULT_PACE <= cb.PACE_MAX
+    assert (cb.DEFAULT_EMOTION, cb.DEFAULT_PACE) == (0.5, 0.5), "기본값은 모델 권장 0.5/0.5"
 
 
 # ---------------- 쉼 인접 가장자리 트림 ----------------
