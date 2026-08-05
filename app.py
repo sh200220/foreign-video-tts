@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +48,9 @@ PREVIEW_TEXT = {
 }
 
 SETTINGS_PATH = Path.home() / ".foreign-video-tts.json"
+
+# [취소] 버튼이 세우는 협조적 취소 깃발 — 진행 중인 줄까지만 만들고 멈춘다
+CANCEL_EVENT = threading.Event()
 
 
 def load_settings():
@@ -133,6 +137,11 @@ except (TypeError, ValueError):
     INIT_PACE = 0.5
 INIT_PACE = INIT_PACE if 0.2 <= INIT_PACE <= 0.8 else 0.5
 INIT_IS_CB = core.is_chatterbox(_init_code)         # 고품질 모드면 속도 대신 감정·페이스 슬라이더
+try:
+    INIT_TAKES = int(_s.get("takes", 1))            # 테이크 수 (같은 대본 여러 번 생성)
+except (TypeError, ValueError):
+    INIT_TAKES = 1
+INIT_TAKES = INIT_TAKES if 1 <= INIT_TAKES <= 5 else 1
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -303,9 +312,11 @@ def apply_replacements(text, rules):
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
              dlg_on, spk_n1, spk_n2, spk_n3, spk_n4, spk_v1, spk_v2, spk_v3, spk_v4,
-             srt_max, emotion, pace, progress=gr.Progress()):
+             srt_max, emotion, pace, takes, progress=gr.Progress()):
+    CANCEL_EVENT.clear()
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
+    takes_n = int(takes or 1)
     spk_pairs = [(spk_n1, spk_v1), (spk_n2, spk_v2), (spk_n3, spk_v3), (spk_n4, spk_v4)]
 
     # 마지막 선택을 기억(다음 실행 때 복원)
@@ -317,7 +328,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "dlg_on": bool(dlg_on),
                    "spk": [[(n or "").strip(), v or ""] for n, v in spk_pairs],
                    "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5),
-                   "pace": float(pace or 0.5)})
+                   "pace": float(pace or 0.5), "takes": takes_n})
 
     # 대화 모드 화자 매핑 (슬롯 -> dict). 대화 모드 중엔 목소리 섞기 무시.
     # 고품질 모드도 지원: 참고목소리·기본 목소리를 화자별로 지정할 수 있다.
@@ -350,7 +361,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     def synth_one(content):
         audio, sr, segs = core.synthesize_segments(
             apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0,
-            voice_map=vmap, emotion=emotion, pace=pace)
+            voice_map=vmap, emotion=emotion, pace=pace,
+            should_stop=CANCEL_EVENT.is_set)
         if trim_on:                          # 가장자리 무음 제거 → 자막 타이밍을 앞 trim 만큼 당김
             audio, lead = core.trim_fade(audio, sr)
             dur = len(audio) / sr
@@ -362,33 +374,39 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
             audio = core.normalize_peak(audio)
         return audio, sr, segs
 
-    # 자동저장 OFF + 단일 대본(업로드/장면분할 아님) → 저장하지 않고 미리듣기만.
+    # 자동저장 OFF + 단일 대본(업로드/장면분할/테이크 아님) → 저장하지 않고 미리듣기만.
     #   결과는 메모리(State)에 들고 있다가 [저장] 버튼을 누를 때 폴더에 기록한다.
-    if not autosave and not files and not scene_split:
+    if not autosave and not files and not scene_split and takes_n == 1:
         if not (text or "").strip():
             raise gr.Error("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
         try:
             audio, sr, segs = synth_one(text)
         except Exception as e:
             raise gr.Error(str(e))
+        gr.Info("생성 완료 — 아직 저장 안 됨 ([저장] 버튼으로 저장)")
         preview_path = core.save_audio(audio, sr, PREVIEW_DIR, "preview", fmt)
         status = ('<div class="status-ok">생성됨 · 아직 저장 안 함 — '
                   '아래 <b>[저장]</b> 버튼을 누르면 폴더에 저장돼요.</div>')
         return str(preview_path), status, [], (audio, sr, segs)
 
-    # 작업 목록: (텍스트소스, 파일여부, 저장이름). 업로드가 있으면 우선(장면분할 무시).
+    # 작업 목록: (텍스트소스, 파일여부, 저장이름). 업로드가 있으면 우선(장면분할·테이크 무시).
     if files:
         jobs = [(f, True, Path(f).stem) for f in files]
     elif scene_split:                        # 빈 줄로 장면을 나눠 각각 저장
         blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
         jobs = [(b, False, f"{filename}_{i + 1:02d}") for i, b in enumerate(blocks)] \
             or [(text, False, filename)]
+    elif takes_n > 1:                        # 같은 대본을 여러 번 생성해 고르기
+        jobs = [(text, False, f"{filename}_t{n}") for n in range(1, takes_n + 1)]
     else:
         jobs = [(text, False, filename)]
 
-    saved, skipped = [], []                  # saved: (Path, dur); skipped: (이름, 사유)
+    saved, skipped, canceled = [], [], False  # saved: (Path, dur); skipped: (이름, 사유)
     total = len(jobs)
     for i, (src, is_path, base) in enumerate(jobs):
+        if CANCEL_EVENT.is_set():
+            canceled = True
+            break
         if total > 1:
             progress(i / total, desc=f"{i + 1}/{total} 생성 중…")
         try:
@@ -400,21 +418,32 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
             saved.append((p, len(audio) / sr))
         except Exception as e:               # 한 개가 실패해도 나머지는 계속
             skipped.append((base, str(e)))
+            if CANCEL_EVENT.is_set():        # 취소로 인한 실패면 나머지도 중단
+                canceled = True
+                break
     progress(1.0)
 
+    if canceled:
+        gr.Info(f"취소됨 — 완료된 {len(saved)}개는 저장돼 있어요")
+    elif saved:
+        gr.Info(f"생성 완료 — {len(saved)}개 저장")
+
     if not saved:
+        if canceled:
+            return None, '<div class="status-ok">취소됨 · 저장된 파일 없음</div>', [], None
         raise gr.Error(skipped[0][1] if (skipped and total == 1)
                        else "생성된 파일이 없습니다. " + " / ".join(f"{b} ({m})" for b, m in skipped))
 
     paths = [str(p) for p, _ in saved]
     srt_note = " · 자막(.srt) 포함" if srt_on else ""
-    if len(saved) == 1 and not skipped:
+    cancel_note = " · <b>취소됨</b> (완료분만 저장)" if canceled else ""
+    if len(saved) == 1 and not skipped and not canceled:
         p, dur = saved[0]
         # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
         status = (f'<div class="status-ok">저장 완료 · <code>{html.escape(str(p))}</code>'
                   f' · {dur:.1f}초{srt_note}</div>')
     else:
-        msg = f"{len(saved)}개 저장 완료{srt_note}"
+        msg = f"{len(saved)}개 저장 완료{srt_note}{cancel_note}"
         if skipped:
             msg += f" · {len(skipped)}개 건너뜀"
         shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p, _ in saved[:8])
@@ -602,6 +631,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                                                    "예) 일본어 목소리:  AI=エーアイ")
             gap_sec = gr.Slider(0.0, 2.0, value=INIT_GAP, step=0.1, label="문단(줄) 사이 쉼",
                                 info="줄바꿈마다 넣을 무음 길이(초). 0 = 없음")
+            takes = gr.Slider(1, 5, value=INIT_TAKES, step=1, label="테이크 수",
+                              info="같은 대본을 여러 번 생성해 제일 좋은 것 고르기 — _t1, _t2… 로 "
+                                   "저장돼요 (단일 대본일 때만, 고품질 모드에서 특히 유용)")
 
     with gr.Group(elem_classes="card"):
         with gr.Row():
@@ -628,7 +660,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             downloads_btn = gr.Button("다운로드", size="sm")
             default_btn = gr.Button("기본 폴더", size="sm")
 
-    btn = gr.Button("음성 생성", variant="primary", elem_classes="generate-btn")
+    with gr.Row():
+        btn = gr.Button("음성 생성", variant="primary", elem_classes="generate-btn", scale=5)
+        cancel_btn = gr.Button("취소", size="lg", scale=1)
     audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath", elem_classes="audio-out")
     status = gr.HTML(elem_id="status")
     with gr.Row(elem_classes="folder-tools"):
@@ -715,7 +749,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
-                      autosave, dlg_on] + spk_names + spk_voices + [srt_max, emotion, pace],
+                      autosave, dlg_on] + spk_names + spk_voices + [srt_max, emotion, pace, takes],
               outputs=[audio_out, status, last_saved, pending_state],
               show_progress_on=audio_out).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
@@ -723,6 +757,13 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                    inputs=[pending_state, filename, folder, fmt, add_ts, srt_on, srt_max],
                    outputs=[status, last_saved, pending_state]).then(
                    update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
+
+    def request_cancel():
+        """생성 취소 요청 — 진행 중인 줄까지만 만들고 멈춘다 (완료분은 저장 유지)."""
+        CANCEL_EVENT.set()
+        gr.Info("취소 요청됨 — 진행 중인 부분까지만 만들고 멈춥니다")
+
+    cancel_btn.click(request_cancel, inputs=[], outputs=[])
 
 
 if __name__ == "__main__":
