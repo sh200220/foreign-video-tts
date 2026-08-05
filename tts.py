@@ -1,12 +1,13 @@
 """
-Kokoro TTS 일괄 생성기 (CLI)
-============================
-scripts/en, scripts/ja 폴더의 .txt 대본을 읽어 output/en, output/ja 에 .wav 로 저장.
+TTS 일괄 생성기 (CLI)
+=====================
+scripts/en, scripts/ja, scripts/ko 폴더의 .txt 대본을 읽어 output/<언어> 에 저장.
 음성 생성 로직은 kokoro_core 모듈을 공유한다 (웹 UI app.py 와 동일 코어).
 
 사용 예:
-    python tts.py                      # en, ja 전부
+    python tts.py                      # en, ja, ko 전부
     python tts.py --lang ja            # 일본어만
+    python tts.py --lang ko --voice M2 # 한국어, 남성 목소리
     python tts.py --lang en --voice am_michael --speed 1.1
 """
 
@@ -24,10 +25,11 @@ try:
 except Exception:
     pass
 
-# 폴더명 -> (Kokoro lang_code, 기본 목소리)
+# 폴더명 -> (lang_code, 기본 목소리)
 FOLDER_LANG = {
-    "en": ("a", "af_heart"),   # 영어(미국)
-    "ja": ("j", "jf_alpha"),   # 일본어
+    "en": ("a", "af_heart"),   # 영어(미국, Kokoro)
+    "ja": ("j", "jf_alpha"),   # 일본어(Kokoro)
+    "ko": ("k", "F1"),         # 한국어(Supertonic)
 }
 
 ROOT = Path(__file__).resolve().parent
@@ -43,8 +45,8 @@ def find_text_files(folder_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kokoro TTS 일괄 생성기")
-    parser.add_argument("--lang", choices=["en", "ja", "all"], default="all",
+    parser = argparse.ArgumentParser(description="TTS 일괄 생성기 (Kokoro + Supertonic)")
+    parser.add_argument("--lang", choices=["en", "ja", "ko", "all"], default="all",
                         help="처리할 언어 (기본: all)")
     parser.add_argument("--voice", default=None,
                         help="목소리 강제 지정 (단일 언어일 때만). --lang all 과 함께 쓸 수 없음")
@@ -59,14 +61,14 @@ def main():
     args = parser.parse_args()
 
     if (args.voice or args.voice2) and args.lang == "all":
-        print("[오류] --voice/--voice2 는 언어별로 달라 --lang en 또는 --lang ja 와 함께 쓰세요.")
+        print("[오류] --voice/--voice2 는 언어별로 달라 --lang en/ja/ko 와 함께 쓰세요.")
         sys.exit(2)
     if args.voice2 and not 0.0 <= args.mix <= 1.0:
         print(f"[오류] --mix 는 0~1 사이여야 합니다: {args.mix}")
         sys.exit(2)
 
     ext = core.FORMATS[args.format.upper()]
-    folders = ["en", "ja"] if args.lang == "all" else [args.lang]
+    folders = ["en", "ja", "ko"] if args.lang == "all" else [args.lang]
 
     total = 0
     for folder_name in folders:
