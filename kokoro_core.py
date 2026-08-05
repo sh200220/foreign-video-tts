@@ -148,13 +148,14 @@ def _trim_edge(audio, sr, lead=False, trail=False, thresh=0.008, fade_ms=8):
 
 
 def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_map=None,
-                        emotion=None, pace=None):
+                        emotion=None, pace=None, should_stop=None):
     """텍스트 -> (audio_np, sample_rate, segments). 줄 단위 렌더 루프.
 
     segments = [(자막텍스트, 시작초, 끝초)] — 자막에는 화자 접두사·쉼 태그를 뺀다.
     voice_map: 대화 모드 {'이름': 목소리} — '이름:' 줄을 그 목소리로 읽는다.
     emotion/pace: 고품질(Chatterbox) 모드의 감정 강도(0~1)·말 페이스(0.2~0.8).
     둘 다 사용자가 직접 조절하며(자동 보정 없음), 다른 엔진은 무시.
+    should_stop: 협조적 취소 콜백 — 줄 사이마다 확인해 True 면 RuntimeError 로 중단.
     [쉼:초] 태그 위치에는 무음을 넣는다(자막 구간은 말이 시작~끝나는 부분만).
     gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
 
@@ -180,6 +181,8 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
         assigned = [(None, ln) for ln in lines]
     parts, segments, cursor, first = [], [], 0.0, True
     for line_voice_name, spoken in assigned:
+        if should_stop and should_stop():
+            raise RuntimeError("생성이 취소되었습니다.")
         if not first and gap_len > 0:           # 첫 줄 앞엔 무음 없음
             parts.append(np.zeros(gap_len, dtype="float32"))
             cursor += gap_len / sr
@@ -192,6 +195,8 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
                 n = int(sr * val)
                 parts.append(np.zeros(n, dtype="float32"))
                 cursor += n / sr
+            elif not has_speech(val):
+                continue                        # 부호·공백뿐인 조각은 잡음 방지 위해 건너뜀
             else:
                 chunk = _synth_line(val, lang_code, line_voice, speed, emotion, pace)
                 # 쉼과 맞닿은 가장자리는 무음을 잘라 지정한 쉼 길이를 정확히 유지
@@ -303,6 +308,12 @@ def split_pause_tags(line):
 def strip_pause_tags(line):
     """자막용: 쉼 태그를 지우고 공백 정리."""
     return re.sub(r"\s+", " ", _PAUSE_TAG.sub(" ", line)).strip()
+
+
+def has_speech(piece):
+    """말할 내용(글자·숫자)이 있는지. 문장부호·공백뿐인 조각을 합성에 넣으면
+    엔진(특히 고품질 모드)이 잡음을 만들어내므로 이걸로 걸러 건너뛴다."""
+    return bool(re.search(r"[^\W_]", piece or ""))
 
 
 # --- 대화 모드: 등록된 '이름:' 줄에서 화자가 시작되고 다음 표시까지 유지된다 ---

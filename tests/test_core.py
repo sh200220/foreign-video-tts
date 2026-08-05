@@ -328,6 +328,25 @@ def test_chatterbox_dialogue_validation():
         assert "가능한 목소리" in str(e)
 
 
+def test_has_speech():
+    assert core.has_speech("안녕하세요")
+    assert core.has_speech("hello!")
+    assert core.has_speech("2024")
+    assert not core.has_speech("...")
+    assert not core.has_speech("?! ~ ---")
+    assert not core.has_speech("   ")
+    assert not core.has_speech("")
+
+
+def test_should_stop_cancels_before_synth():
+    try:
+        core.synthesize_segments("아무 텍스트", "a", "af_heart",
+                                 should_stop=lambda: True)
+        assert False, "should_stop=True 면 RuntimeError 여야 함"
+    except RuntimeError as e:
+        assert "취소" in str(e)
+
+
 def test_chatterbox_control_ranges():
     import chatterbox_engine as cb
     assert cb.EMOTION_MIN <= cb.DEFAULT_EMOTION <= cb.EMOTION_MAX
