@@ -256,7 +256,6 @@ def on_lang_change(lang_label, mix_on_val):
             gr.update(visible=can_mix),
             gr.update(visible=can_mix and bool(mix_on_val)),
             gr.update(visible=not is_cb),
-            gr.update(visible=is_cb),
             gr.update(visible=is_cb))
 
 
@@ -518,12 +517,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             voice = gr.Dropdown(INIT_VOICES, value=INIT_VOICE, label="목소리")
             speed = gr.Slider(0.5, 2.0, value=INIT_SPEED, step=0.05, label="속도",
                               info="1.0 = 보통", visible=not INIT_IS_CB)
+        with gr.Row(visible=INIT_IS_CB) as hq_row:   # 고품질 모드 전용 조절 (전용 행 = 설명 안 깨짐)
             emotion = gr.Slider(0.0, 1.0, value=INIT_EMOTION, step=0.05, label="감정 강도",
-                                info="0.3 = 차분 · 0.5 = 보통 · 0.7 = 극적 (높이면 말도 빨라져요)",
-                                visible=INIT_IS_CB)
+                                info="0.3 차분 · 0.5 보통 · 0.7 극적")
             pace = gr.Slider(0.2, 0.8, value=INIT_PACE, step=0.05, label="말 페이스",
-                             info="낮음 = 느긋·또박또박 · 높음 = 빠릿 (0.5 = 보통)",
-                             visible=INIT_IS_CB)
+                             info="낮음 느긋 · 0.5 보통 · 높음 빠릿")
         mix_on = gr.Checkbox(value=INIT_MIX, visible=INIT_CAN_MIX,
                              label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
         with gr.Row(visible=INIT_MIX and INIT_CAN_MIX) as mix_row:
@@ -604,7 +602,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
 
     lang.change(on_lang_change, inputs=[lang, mix_on],
-                outputs=[voice, voice2, mix_on, mix_row, speed, emotion, pace])
+                outputs=[voice, voice2, mix_on, mix_row, speed, hq_row])
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
@@ -632,7 +630,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
                       autosave, dlg_on, dlg_map, srt_max, emotion, pace],
-              outputs=[audio_out, status, last_saved, pending_state]).then(
+              outputs=[audio_out, status, last_saved, pending_state],
+              show_progress_on=audio_out).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
     save_btn.click(save_pending,
                    inputs=[pending_state, filename, folder, fmt, add_ts, srt_on, srt_max],
