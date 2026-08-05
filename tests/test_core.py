@@ -233,6 +233,20 @@ def test_match_speaker():
     assert core.match_speaker("콜론 없는 줄", vm) == (None, "콜론 없는 줄")
 
 
+# ---------------- 쉼 인접 가장자리 트림 ----------------
+
+def test_trim_edge_sides():
+    sr = 1000
+    silence = np.zeros(500, dtype="float32")
+    tone = np.full(300, 0.5, dtype="float32")
+    audio = np.concatenate([silence, tone, silence])   # 500 + 300 + 500
+    assert len(core._trim_edge(audio, sr, lead=True)) == 800, "앞무음만 제거"
+    assert len(core._trim_edge(audio, sr, trail=True)) == 800, "뒤무음만 제거"
+    assert len(core._trim_edge(audio, sr, lead=True, trail=True)) == 300, "양쪽 제거"
+    assert len(core._trim_edge(audio, sr)) == 1300, "옵션 없으면 그대로"
+    assert len(core._trim_edge(silence, sr, lead=True)) == 0, "전부 무음이면 빈 배열"
+
+
 # ---------------- 자막 줄 규격화 ----------------
 
 def test_srt_split_disabled():

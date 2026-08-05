@@ -79,48 +79,109 @@ def _to_numpy(audio):
     return np.asarray(audio)
 
 
-def synthesize(text, lang_code, voice, speed=1.0):
-    """텍스트 -> (audio_np, sample_rate). 빈 텍스트면 ValueError.
+def _synth_line(line_text, lang_code, voice, speed):
+    """엔진에 상관없이 '한 줄'을 합성해 float32 1-D 배열 반환."""
+    if is_supertonic(lang_code):
+        return supertonic_engine.synth_line(line_text, voice, speed)
+    pipe = get_pipeline(lang_code)
+    chunks = [_to_numpy(r[2]).astype("float32") for r in pipe(line_text, voice=voice, speed=speed)]
+    return np.concatenate(chunks) if chunks else np.zeros(0, dtype="float32")
+
+
+def _trim_edge(audio, sr, lead=False, trail=False, thresh=0.008, fade_ms=8):
+    """[쉼:초] 태그와 맞닿은 쪽의 무음 가장자리만 제거 + 짧은 페이드(클릭 방지).
+
+    조각을 따로 합성하면 모델이 앞뒤에 자연 여백을 붙여 지정한 쉼보다
+    길어지므로, 쉼 쪽 가장자리를 잘라 지정 길이가 정확히 지켜지게 한다."""
+    if not len(audio) or not (lead or trail):
+        return audio
+    mask = np.abs(audio) > thresh
+    if not mask.any():
+        return audio[:0]                 # 전부 무음이면 빈 배열 (쉼이 대신함)
+    first = int(np.argmax(mask)) if lead else 0
+    last = len(mask) - int(np.argmax(mask[::-1])) if trail else len(audio)
+    out = audio[first:last].astype("float32").copy()
+    n = min(int(sr * fade_ms / 1000), len(out) // 2)
+    if n > 0:
+        ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+        if lead:
+            out[:n] *= ramp
+        if trail:
+            out[-n:] *= ramp[::-1]
+    return out
+
+
+def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_map=None):
+    """텍스트 -> (audio_np, sample_rate, segments). 줄 단위 렌더 루프.
+
+    segments = [(자막텍스트, 시작초, 끝초)] — 자막에는 화자 접두사·쉼 태그를 뺀다.
+    voice_map: 대화 모드 {'이름': 목소리} — '이름:' 줄을 그 목소리로 읽는다.
+    [쉼:초] 태그 위치에는 무음을 넣는다(자막 구간은 말이 시작~끝나는 부분만).
+    gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
 
     voice 는 프리셋 이름(str) 또는 blend_voices 가 만든 스타일 텐서 둘 다 가능
     (Kokoro 파이프라인이 FloatTensor 를 그대로 수용)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
-    pipe = get_pipeline(lang_code)
-    chunks = [_to_numpy(a) for _, _, a in pipe(text, voice=voice, speed=speed, split_pattern=r"\n+")]
-    if not chunks:
-        raise RuntimeError("오디오가 생성되지 않았습니다.")
-    return np.concatenate(chunks), SAMPLE_RATE
-
-
-def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0):
-    """텍스트 -> (audio_np, sample_rate, segments).
-
-    segments = [(자막텍스트, 시작초, 끝초)] (줄 단위, 자막/srt 용).
-    gap_sec 만큼 줄 사이에 무음을 넣으며 그만큼 타이밍에도 반영한다.
-    gap_sec=0 이면 synthesize() 와 동일한 오디오."""
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
-    pipe = get_pipeline(lang_code)
-    gap_len = int(SAMPLE_RATE * max(0.0, gap_sec))
-    gap = np.zeros(gap_len, dtype=np.float32) if gap_len > 0 else None
-    parts, segments, cursor = [], [], 0.0
-    for r in pipe(text, voice=voice, speed=speed, split_pattern=r"\n+"):
-        if parts and gap is not None:           # 첫 세그먼트 앞엔 무음 없음
-            parts.append(gap)
-            cursor += gap_sec
-        chunk = _to_numpy(r[2]).astype(np.float32)
-        start = cursor
-        parts.append(chunk)
-        cursor += len(chunk) / SAMPLE_RATE
-        seg_text = (r[0] or "").strip()
-        if seg_text:
-            segments.append((seg_text, start, cursor))
+    sr = sample_rate_for(lang_code)
+    speed = clamp_speed(lang_code, speed)
+    if voice_map:
+        valid = voices_for(lang_code)
+        for name, v in voice_map.items():
+            if v not in valid:
+                raise ValueError(
+                    f"화자 '{name}'의 목소리 '{v}'가 현재 언어에 없습니다. "
+                    f"가능한 목소리: {', '.join(valid)}")
+    gap_len = int(sr * max(0.0, gap_sec))
+    parts, segments, cursor, first = [], [], 0.0, True
+    for raw in re.split(r"\n+", text):
+        line = raw.strip()
+        if not line:
+            continue
+        if not first and gap_len > 0:           # 첫 줄 앞엔 무음 없음
+            parts.append(np.zeros(gap_len, dtype="float32"))
+            cursor += gap_len / sr
+        first = False
+        line_voice, spoken = voice, line
+        if voice_map:
+            mv, rest = match_speaker(line, voice_map)
+            if mv is not None:
+                line_voice, spoken = mv, rest
+        seg_start, seg_end = None, cursor
+        pieces = split_pause_tags(spoken)
+        for i, (kind, val) in enumerate(pieces):
+            if kind == "pause":
+                n = int(sr * val)
+                parts.append(np.zeros(n, dtype="float32"))
+                cursor += n / sr
+            else:
+                chunk = _synth_line(val, lang_code, line_voice, speed)
+                # 쉼과 맞닿은 가장자리는 무음을 잘라 지정한 쉼 길이를 정확히 유지
+                chunk = _trim_edge(
+                    chunk, sr,
+                    lead=(i > 0 and pieces[i - 1][0] == "pause"),
+                    trail=(i + 1 < len(pieces) and pieces[i + 1][0] == "pause"))
+                if not len(chunk):
+                    continue
+                if seg_start is None:
+                    seg_start = cursor
+                parts.append(chunk)
+                cursor += len(chunk) / sr
+                seg_end = cursor
+        caption = strip_pause_tags(spoken)
+        if seg_start is not None and caption:
+            segments.append((caption, seg_start, seg_end))
+    parts = [p for p in parts if len(p)]
     if not parts:
         raise RuntimeError("오디오가 생성되지 않았습니다.")
-    return np.concatenate(parts), SAMPLE_RATE, segments
+    return np.concatenate(parts), sr, segments
+
+
+def synthesize(text, lang_code, voice, speed=1.0):
+    """텍스트 -> (audio_np, sample_rate). 빈 텍스트면 ValueError. (segments 없는 래퍼)"""
+    audio, sr, _ = synthesize_segments(text, lang_code, voice, speed)
+    return audio, sr
 
 
 def normalize_peak(audio, peak=0.97):
