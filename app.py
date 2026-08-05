@@ -31,14 +31,15 @@ FORMAT_LABELS = list(core.FORMATS.keys())
 # 자동저장 OFF일 때 '미저장 미리듣기'용 임시 폴더 (브라우저 재생 전용; 실제 저장은 [저장] 버튼)
 PREVIEW_DIR = str(Path(tempfile.gettempdir()) / "foreign-video-tts-preview")
 
-# 실측 기반 대략치 (chars/sec, 속도 1.0): 영어 13.6 / 일본어 5.6
-CPS = {"a": 13.6, "b": 13.6, "j": 5.6}
+# 실측 기반 대략치 (chars/sec, 속도 1.0): 영어 13.6 / 일본어 5.6 / 한국어 6.3
+CPS = {"a": 13.6, "b": 13.6, "j": 5.6, "k": 6.3}
 
 # 목소리 미리듣기용 짧은 샘플 문장 (언어별)
 PREVIEW_TEXT = {
     "a": "This is a preview of the selected voice.",
     "b": "This is a preview of the selected voice.",
     "j": "これは、選んだ声のプレビューです。",
+    "k": "안녕하세요, 선택한 목소리의 미리듣기입니다.",
 }
 
 SETTINGS_PATH = Path.home() / ".foreign-video-tts.json"
@@ -95,6 +96,14 @@ INIT_REPLACE = _s.get("replace_rules", "") or ""
 INIT_TRIM = bool(_s.get("trim_on", False))
 INIT_SCENE = bool(_s.get("scene_split", False))
 INIT_AUTOSAVE = bool(_s.get("autosave", True))   # 생성 시 자동 저장 (기본 ON; 끄면 [저장] 버튼으로)
+INIT_DLG = bool(_s.get("dlg_on", False))         # 대화 모드 (화자별 목소리)
+INIT_DLG_MAP = _s.get("dlg_map", "") or ""
+try:
+    INIT_SRT_MAX = int(_s.get("srt_max", 0))     # 자막 한 줄 최대 글자 수 (0=제한 없음)
+except (TypeError, ValueError):
+    INIT_SRT_MAX = 0
+INIT_SRT_MAX = INIT_SRT_MAX if 0 <= INIT_SRT_MAX <= 60 else 0
+INIT_CAN_MIX = not core.is_supertonic(_init_code)   # 목소리 섞기는 Kokoro 언어에서만
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
 HEAD = (
@@ -106,7 +115,7 @@ HEADER_HTML = """
 <div class="app-head">
   <div class="bar"></div>
   <div class="brand"><span class="mark"></span><span class="name">외국어 영상 TTS</span></div>
-  <p class="sub">Kokoro 기반 내레이션 음성 생성 · 일본어와 영어</p>
+  <p class="sub">내레이션 음성 생성 · 한국어 / 일본어 / 영어 (Kokoro · Supertonic)</p>
 </div>
 """
 
@@ -217,12 +226,17 @@ footer{display:none!important;}
 """
 
 
-def on_lang_change(lang_label):
-    """언어 바뀌면 목소리 1·2 드롭다운을 해당 언어 목록으로 함께 갱신."""
+def on_lang_change(lang_label, mix_on_val):
+    """언어 바뀌면 목소리 1·2 드롭다운 갱신 + 목소리 섞기 지원 여부 반영.
+
+    한국어(Supertonic)는 목소리 섞기 미지원 → 체크박스·믹스 행을 숨긴다."""
     info = core.LANGS[lang_label]
     voices = core.voices_for(info["code"])
+    can_mix = not core.is_supertonic(info["code"])
     return (gr.update(choices=voices, value=info["default_voice"]),
-            gr.update(choices=voices, value=_second_voice(voices)))
+            gr.update(choices=voices, value=_second_voice(voices)),
+            gr.update(visible=can_mix),
+            gr.update(visible=can_mix and bool(mix_on_val)))
 
 
 def update_stats(text, lang_label, speed):
@@ -248,7 +262,7 @@ def apply_replacements(text, rules):
 
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
-             progress=gr.Progress()):
+             dlg_on, dlg_map, srt_max, progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
 
@@ -257,10 +271,21 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "fmt": fmt, "folder": out_folder, "mix_on": bool(mix_on), "add_ts": bool(add_ts),
                    "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0), "norm_mode": norm_mode,
                    "replace_rules": replace_rules or "", "trim_on": bool(trim_on),
-                   "scene_split": bool(scene_split), "autosave": bool(autosave)})
+                   "scene_split": bool(scene_split), "autosave": bool(autosave),
+                   "dlg_on": bool(dlg_on), "dlg_map": dlg_map or "",
+                   "srt_max": int(srt_max or 0)})
+
+    # 대화 모드 화자 매핑 (형식 오류는 바로 안내). 대화 모드 중엔 목소리 섞기 무시.
+    vmap = None
+    if dlg_on:
+        try:
+            vmap = core.parse_voice_map(dlg_map) or None
+        except ValueError as e:
+            raise gr.Error(str(e))
+    use_mix = mix_on and not core.is_supertonic(code) and not vmap
 
     try:
-        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
+        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if use_mix else voice
     except ValueError as e:
         raise gr.Error(str(e))
 
@@ -271,7 +296,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
 
     def synth_one(content):
         audio, sr, segs = core.synthesize_segments(
-            apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0)
+            apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0,
+            voice_map=vmap)
         if trim_on:                          # 가장자리 무음 제거 → 자막 타이밍을 앞 trim 만큼 당김
             audio, lead = core.trim_fade(audio, sr)
             dur = len(audio) / sr
@@ -317,7 +343,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
             audio, sr, segs = synth_one(content)
             p = core.save_audio(audio, sr, out_folder, named(base), fmt)
             if srt_on:
-                core.write_srt(segs, p.with_suffix(".srt"))
+                core.write_srt(core.split_segments_for_srt(segs, srt_max), p.with_suffix(".srt"))
             saved.append((p, len(audio) / sr))
         except Exception as e:               # 한 개가 실패해도 나머지는 계속
             skipped.append((base, str(e)))
@@ -345,7 +371,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     return paths[0], status, paths, None
 
 
-def save_pending(pending, filename, folder, fmt, add_ts, srt_on):
+def save_pending(pending, filename, folder, fmt, add_ts, srt_on, srt_max):
     """자동저장 OFF로 만든 '미저장 결과'를 지금 설정대로 폴더에 저장한다.
 
     pending = (audio_np, sample_rate, segments) 또는 None.
@@ -360,7 +386,7 @@ def save_pending(pending, filename, folder, fmt, add_ts, srt_on):
     try:
         p = core.save_audio(audio, sr, out_folder, base, fmt)
         if srt_on:
-            core.write_srt(segs, p.with_suffix(".srt"))
+            core.write_srt(core.split_segments_for_srt(segs, srt_max), p.with_suffix(".srt"))
     except Exception as e:
         raise gr.Error(str(e))
     srt_note = " · 자막(.srt) 포함" if srt_on else ""
@@ -384,10 +410,11 @@ def update_recent(just_saved, recent):
 def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio):
     """선택한 목소리(또는 믹스)로 짧은 샘플을 합성해 메모리로 재생. 파일은 저장하지 않음."""
     code = core.LANGS[lang_label]["code"]
+    use_mix = mix_on and not core.is_supertonic(code)   # 한국어는 목소리 섞기 미지원
     try:
-        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if mix_on else voice
+        voice_arg = core.blend_voices(code, voice, voice2, 1.0 - mix_ratio) if use_mix else voice
         audio, sr = core.synthesize(PREVIEW_TEXT.get(code, PREVIEW_TEXT["a"]), code, voice_arg, speed)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         raise gr.Error(str(e))
     # gr.Audio(type="numpy") 는 (sample_rate, 데이터) 튜플을 받음. int16 로 안전하게 변환.
     return sr, (audio * 32767).clip(-32768, 32767).astype("int16")
@@ -438,11 +465,14 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "2. **대본**에 읽을 내용을 붙여넣습니다. (영상이 여러 개면 ‘파일로 만들기’로 .txt 여러 개를 한 번에)\n"
             "3. **포맷**(영상 편집엔 WAV, 공유엔 MP3)과 **저장 폴더**를 고릅니다.\n"
             "4. **[음성 생성]** → 폴더에 저장되고 바로 재생·다운로드됩니다.\n\n"
-            "- **목소리 섞기**: 두 목소리를 비율로 혼합해 새 음색.\n"
-            "- **자막(.srt)**: 음성과 함께 자막 파일을 만들어 영상 편집기에서 캡션 동기화.\n"
+            "- **목소리 섞기**: 두 목소리를 비율로 혼합해 새 음색 (한국어는 미지원).\n"
+            "- **대화 모드**: 화자를 등록하고 대본 줄 앞에 `이름:`을 붙이면 줄마다 다른 목소리로.\n"
+            "- **쉼 태그**: 대본 속 `[쉼:1.5]` 자리에 정확히 1.5초 무음. 줄 전체가 태그뿐이면 자막 없는 쉼.\n"
+            "- **자막(.srt)**: 음성과 함께 자막 파일 저장. ‘한 줄 최대 글자 수’로 긴 자막 자동 나누기.\n"
             "- **음량 정규화**: 클립마다 볼륨을 비슷하게 (방송용 = 유튜브 권장 음량).\n"
             "- **추가 옵션**: 잘못 읽는 단어 교정(발음 교정), 문단 사이 쉼 넣기.\n"
-            "- **장면별로 나눠 저장**: 대본을 빈 줄로 나눠 장면마다 따로 파일로.",
+            "- **장면별로 나눠 저장**: 대본을 빈 줄로 나눠 장면마다 따로 파일로.\n"
+            "- **한국어**: 첫 생성 때 모델을 자동 다운로드해요(인터넷 1회). 속도는 0.7 미만이면 0.7로 조정됩니다.",
             elem_classes="hint")
 
     with gr.Group(elem_classes="card"):
@@ -450,8 +480,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             lang = gr.Dropdown(LANG_LABELS, value=INIT_LANG, label="언어")
             voice = gr.Dropdown(INIT_VOICES, value=INIT_VOICE, label="목소리")
             speed = gr.Slider(0.5, 2.0, value=INIT_SPEED, step=0.05, label="속도", info="1.0 = 보통")
-        mix_on = gr.Checkbox(value=INIT_MIX, label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
-        with gr.Row(visible=INIT_MIX) as mix_row:
+        mix_on = gr.Checkbox(value=INIT_MIX, visible=INIT_CAN_MIX,
+                             label="목소리 섞기 — 두 목소리를 비율로 혼합 (같은 언어끼리)")
+        with gr.Row(visible=INIT_MIX and INIT_CAN_MIX) as mix_row:
             voice2 = gr.Dropdown(INIT_VOICES, value=INIT_VOICE2, label="목소리 2")
             mix_ratio = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="섞는 비율",
                                   info="왼쪽 = 목소리 1 · 오른쪽 = 목소리 2")
@@ -463,8 +494,17 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
 
     with gr.Group(elem_classes="card"):
         text = gr.Textbox(lines=6, label="대본",
-                          placeholder="여기에 대본을 붙여넣으세요. 문장·문단마다 줄바꿈하면 더 자연스럽습니다.")
+                          placeholder="여기에 대본을 붙여넣으세요. 문장·문단마다 줄바꿈하면 더 자연스럽습니다.\n"
+                                      "원하는 곳에 [쉼:1.5] 를 넣으면 그 자리에서 1.5초 쉬어요.")
         stats = gr.Markdown("글자 수 0", elem_classes="stats")
+        dlg_on = gr.Checkbox(value=INIT_DLG, label="대화 모드 — 줄 앞 ‘이름:’ 표시로 화자별 목소리")
+        with gr.Column(visible=INIT_DLG) as dlg_col:
+            dlg_map = gr.Textbox(value=INIT_DLG_MAP, lines=3,
+                                 label="화자 지정 (한 줄에 하나: 이름=목소리)",
+                                 info="대본의 ‘이름: 내용’ 줄만 그 목소리로 읽어요. 등록 안 된 줄은 "
+                                      "기본 목소리로 읽고, 자막에는 이름을 빼고 기록합니다. "
+                                      "대화 모드 중에는 목소리 섞기가 무시됩니다.",
+                                 placeholder="A=af_heart\nB=am_michael")
         with gr.Accordion("파일로 만들기 — .txt 여러 개 올리면 한 번에 (선택)", open=False):
             gr.Markdown("파일을 올리면 위 대본 대신 **각 파일 내용**으로 만들고, **각 파일 이름**으로 저장됩니다 "
                         "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
@@ -492,6 +532,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         with gr.Row():
             srt_on = gr.Checkbox(value=INIT_SRT, label="자막(.srt)도 같이 저장")
             trim_on = gr.Checkbox(value=INIT_TRIM, label="무음 다듬기 + 페이드 (앞뒤 정리)")
+        srt_max = gr.Slider(0, 60, value=INIT_SRT_MAX, step=1,
+                            label="자막 한 줄 최대 글자 수 (0 = 제한 없음)",
+                            info="긴 자막을 여러 개로 나눠요 — 영어 42 / 한국어·일본어 20~24 권장")
         scene_split = gr.Checkbox(value=INIT_SCENE,
                                   label="장면별로 나눠 저장 (빈 줄로 장면 구분 → 문단마다 파일)")
         norm_mode = gr.Radio(NORM_MODES, value=INIT_NORM, label="음량 정규화",
@@ -515,11 +558,14 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     recent_state = gr.State([])
     pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
 
-    lang.change(on_lang_change, inputs=lang, outputs=[voice, voice2])
+    lang.change(on_lang_change, inputs=[lang, mix_on], outputs=[voice, voice2, mix_on, mix_row])
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
-    mix_on.change(lambda on: gr.update(visible=on), inputs=mix_on, outputs=mix_row)
+    mix_on.change(lambda on, lang_label: gr.update(
+                      visible=on and not core.is_supertonic(core.LANGS[lang_label]["code"])),
+                  inputs=[mix_on, lang], outputs=mix_row)
+    dlg_on.change(lambda on: gr.update(visible=on), inputs=dlg_on, outputs=dlg_col)
     preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio], outputs=preview_audio)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
     desktop_btn.click(lambda: str(Path.home() / "Desktop"), outputs=folder)
@@ -529,11 +575,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
-                      autosave],
+                      autosave, dlg_on, dlg_map, srt_max],
               outputs=[audio_out, status, last_saved, pending_state]).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
     save_btn.click(save_pending,
-                   inputs=[pending_state, filename, folder, fmt, add_ts, srt_on],
+                   inputs=[pending_state, filename, folder, fmt, add_ts, srt_on, srt_max],
                    outputs=[status, last_saved, pending_state]).then(
                    update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
 
