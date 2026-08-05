@@ -1,5 +1,6 @@
-# 가상환경
+# 가상환경 (.venv-chatterbox = 고품질 파일럿용 별도 환경)
 .venv/
+.venv-chatterbox/
 venv/
 
 # Python 캐시
