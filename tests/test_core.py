@@ -423,6 +423,42 @@ def test_srt_split_forced():
     assert [t for t, _, _ in out] == ["가나다라", "마바사아", "자차"], out
 
 
+# ---------------- time_stretch (저장 배속: 피치 유지 시간 신축) ----------------
+
+def test_time_stretch_rate1_identity():
+    a = np.random.default_rng(0).standard_normal(24000).astype("float32")
+    out = core.time_stretch(a, 24000, 1.0)
+    assert np.array_equal(out, a)
+
+
+def test_time_stretch_lengths():
+    sr = 24000
+    t = np.linspace(0, 1, sr, endpoint=False)
+    a = np.sin(2 * np.pi * 220 * t).astype("float32")
+    fast = core.time_stretch(a, sr, 1.5)
+    slow = core.time_stretch(a, sr, 0.8)
+    assert abs(len(fast) - sr / 1.5) < sr * 0.05, len(fast)
+    assert abs(len(slow) - sr / 0.8) < sr * 0.05, len(slow)
+
+
+def test_time_stretch_preserves_pitch():
+    # 440Hz 사인파를 1.5배속 -> 피치 유지면 여전히 440Hz 근처가 최대 성분.
+    # (단순 리샘플 방식이었다면 660Hz 로 올라간다)
+    sr = 24000
+    t = np.linspace(0, 1, sr, endpoint=False)
+    a = np.sin(2 * np.pi * 440 * t).astype("float32")
+    out = core.time_stretch(a, sr, 1.5)
+    spec = np.abs(np.fft.rfft(out * np.hanning(len(out))))
+    peak_hz = int(np.argmax(spec)) * sr / len(out)
+    assert abs(peak_hz - 440) < 15, peak_hz
+
+
+def test_time_stretch_short_input_unchanged():
+    a = np.zeros(100, dtype="float32")     # 두 프레임보다 짧으면 그대로 반환
+    out = core.time_stretch(a, 24000, 1.5)
+    assert len(out) == 100
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     print(f"kokoro_core 순수 함수 테스트 - {len(tests)}개\n")

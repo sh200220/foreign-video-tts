@@ -344,6 +344,50 @@ def resample(audio, src_sr, dst_sr):
     return out.astype("float32")
 
 
+def time_stretch(audio, sr, rate):
+    """피치(음높이)는 유지한 채 길이만 바꾸는 시간 신축 (WSOLA).
+
+    rate > 1 이면 빨라져 파일이 짧아지고, < 1 이면 느려져 길어진다 (0.5~2.0 권장).
+    40ms 프레임을 절반씩 겹쳐 붙이되, 이전 조각의 자연스러운 이어짐과 파형이
+    가장 잘 맞는 위치를 ±10ms 안에서 찾아 붙이므로 음성이 뭉개지지 않는다.
+    반환 길이는 약 len(audio)/rate. 두 프레임보다 짧은 입력은 그대로 반환."""
+    audio = np.asarray(audio, dtype="float32")
+    if abs(rate - 1.0) < 1e-3 or not len(audio):
+        return audio
+    frame = int(sr * 0.040) & ~1          # 40ms 분석 프레임 (짝수로)
+    hop_out = frame // 2                  # 50% 오버랩 (Hann 창)
+    if len(audio) <= frame * 2:
+        return audio
+    from scipy.signal import correlate
+    win = np.hanning(frame).astype("float32")
+    search = int(sr * 0.010)              # 파형 정렬 탐색 반경 (±10ms)
+    n_out = int(len(audio) / rate)
+    out = np.zeros(n_out + frame, dtype="float32")
+    norm = np.zeros_like(out)             # 창 함수 누적 (겹침 보정용)
+    max_start = len(audio) - frame
+    tail = None                           # 직전 조각의 '자연스러운 다음 시작' 파형
+    pos_in = 0.0
+    for o in range(0, n_out, hop_out):
+        ideal = min(int(round(pos_in)), max_start)
+        best = ideal
+        if tail is not None and search > 0:
+            lo = max(0, ideal - search)
+            hi = min(max_start, ideal + search)
+            if hi > lo:
+                seg = audio[lo:hi + len(tail)]
+                best = lo + int(np.argmax(correlate(seg, tail, mode="valid")))
+        out[o:o + frame] += audio[best:best + frame] * win
+        norm[o:o + frame] += win
+        tail = audio[best + hop_out:best + hop_out + hop_out]
+        if not len(tail):
+            tail = None
+        pos_in += hop_out * rate
+    out = out[:n_out]
+    nz = norm[:n_out] > 1e-6
+    out[nz] /= norm[:n_out][nz]
+    return out
+
+
 # --- 대화 모드: 등록된 '이름:' 줄에서 화자가 시작되고 다음 표시까지 유지된다 ---
 
 RESET_NAME = "기본"      # '기본:' = 기본 목소리(내레이션)로 복귀하는 예약어

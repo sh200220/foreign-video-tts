@@ -151,11 +151,43 @@ try:
 except (TypeError, ValueError):
     INIT_TAKES = 1
 INIT_TAKES = INIT_TAKES if 1 <= INIT_TAKES <= 5 else 1
+try:
+    INIT_FILE_RATE = float(_s.get("file_rate", 1.0))   # 저장 배속 (파일 자체 속도)
+except (TypeError, ValueError):
+    INIT_FILE_RATE = 1.0
+INIT_FILE_RATE = INIT_FILE_RATE if 0.5 <= INIT_FILE_RATE <= 2.0 else 1.0
 
 # Pretendard 웹폰트 (인터넷 필요; 없으면 시스템 폰트로 자연 폴백)
+# + 재생 배속 훅: 플레이어(WaveSurfer)의 <audio>가 DOM 밖에 있어도 배속이 먹도록
+#   play() 를 감싸 재생 시작마다 원하는 배속을 적용하고, 지금까지 재생된 요소를
+#   기억해 슬라이더로 즉시(재생 중에도) 바꿀 수 있게 한다. 저장 파일에는 영향 없음.
 HEAD = (
     '<link rel="stylesheet" '
     'href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/pretendard.css">'
+    """
+<script>
+(function () {
+  window.__ttsRate = 1.0;
+  window.__ttsMedia = new Set();
+  var orig = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function () {
+    window.__ttsMedia.add(this);
+    try {
+      if (window.__ttsRate && this.playbackRate !== window.__ttsRate)
+        this.playbackRate = window.__ttsRate;
+    } catch (e) {}
+    return orig.apply(this, arguments);
+  };
+  window.__ttsSetRate = function (v) {
+    v = Number(v) || 1.0;
+    window.__ttsRate = v;
+    document.querySelectorAll("audio, video").forEach(function (m) { window.__ttsMedia.add(m); });
+    window.__ttsMedia.forEach(function (m) {
+      try { m.playbackRate = v; } catch (e) {}
+    });
+  };
+})();
+</script>"""
 )
 
 HEADER_HTML = """
@@ -244,6 +276,9 @@ footer{display:none!important;}
 .audio-out label svg{display:none!important;}
 .audio-out .empty svg{display:none!important;}
 
+/* 플레이어 내장 배속 버튼(0.5/1/1.5/2 고정 순환) 숨김 — 아래 '재생 배속' 슬라이더로 대체 */
+button[aria-label^="Adjust playback speed"]{display:none!important;}
+
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
 
 /* ===== 다크모드: 시스템/브라우저 설정 자동 따라감 (Gradio 가 .dark 클래스 적용) =====
@@ -295,18 +330,51 @@ def on_lang_change(lang_label, mix_on_val, sl1, sl2, sl3, sl4):
             *slot_upd)
 
 
-def update_stats(text, lang_label, speed):
-    """대본 글자 수 + 대략적인 예상 길이(실측 chars/sec 기반)."""
+def hq_device_label():
+    """고품질 워커가 보고한 합성 장치를 사람이 읽을 문구로 (미기동이면 None)."""
+    dev = chatterbox_engine.device()
+    if dev == "cuda":
+        return "GPU(CUDA) 가속 사용 중"
+    if dev == "cpu":
+        return "CPU로 동작 중 — 느려요 (NVIDIA 그래픽카드가 있다면 SETUP-고품질모드를 다시 실행)"
+    return None
+
+
+def uses_chatterbox(code, vmap=None):
+    """이번 생성이 고품질(Chatterbox) 엔진을 쓰는지 — 화자 슬롯의 언어 지정까지 포함."""
+    if core.is_chatterbox(code):
+        return True
+    return any(isinstance(v, tuple) and core.is_chatterbox(v[0])
+               for v in (vmap or {}).values())
+
+
+def hq_status_note(used_cb):
+    """생성 결과 상태 줄에 붙일 장치 표시 (고품질 모드가 아니면 빈 문자열)."""
+    if not used_cb:
+        return ""
+    dev = chatterbox_engine.device()
+    if dev == "cuda":
+        return " · 고품질: GPU(CUDA)로 생성"
+    if dev == "cpu":
+        return " · 고품질: CPU로 생성 (느림)"
+    return ""
+
+
+def update_stats(text, lang_label, speed, file_rate=1.0):
+    """대본 글자 수 + 대략적인 예상 길이(실측 chars/sec 기반, 저장 배속 반영)."""
     n = len((text or "").strip())
     if n == 0:
         return "글자 수 0"
     code = core.LANGS[lang_label]["code"]
     mult = 1.0 if core.is_chatterbox(code) else (speed or 1.0)   # 고품질 모드는 속도 고정
     cps = CPS.get(code, 13.6) * mult
-    sec = n / cps if cps else 0
+    sec = (n / cps if cps else 0) / (float(file_rate or 1.0))
     note = ""
     if core.is_chatterbox(code):
-        note = " · 고품질 모드: 생성에 오디오 길이의 몇 배쯤 걸려요 (GPU에선 훨씬 빠름)"
+        dev = hq_device_label()      # 한 번이라도 생성했으면 실제 장치를 알 수 있다
+        note = (f" · 고품질 모드: {dev}" if dev else
+                " · 고품질 모드: 생성에 오디오 길이의 몇 배쯤 걸려요 "
+                "(첫 1회는 모델 준비로 1~2분 추가 · GPU에선 훨씬 빠름)")
     return f"글자 수 {n:,} · 예상 길이 약 {sec:.0f}초 (대략){note}"
 
 
@@ -324,7 +392,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
              dlg_on, spk_n1, spk_n2, spk_n3, spk_n4, spk_v1, spk_v2, spk_v3, spk_v4,
              spk_l1, spk_l2, spk_l3, spk_l4,
-             srt_max, emotion, pace, takes, rules_dict, progress=gr.Progress()):
+             srt_max, emotion, pace, takes, file_rate, rules_dict, progress=gr.Progress()):
     CANCEL_EVENT.clear()
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
@@ -345,7 +413,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "spk": [[(n or "").strip(), v or "", ll or FOLLOW_LANG]
                            for n, v, ll in spk_pairs],
                    "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5),
-                   "pace": float(pace or 0.5), "takes": takes_n})
+                   "pace": float(pace or 0.5), "takes": takes_n,
+                   "file_rate": float(file_rate or 1.0)})
 
     # 대화 모드 화자 매핑 (슬롯 -> dict). 대화 모드 중엔 목소리 섞기 무시.
     # 고품질 모드도 지원: 참고목소리·기본 목소리를 화자별로 지정할 수 있다.
@@ -383,6 +452,12 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
             apply_replacements(content, replace_rules), code, voice_arg, speed, gap_sec or 0.0,
             voice_map=vmap, emotion=emotion, pace=pace,
             should_stop=CANCEL_EVENT.is_set)
+        fr = float(file_rate or 1.0)
+        if abs(fr - 1.0) >= 1e-3 and len(audio):   # 저장 배속: 피치 유지 시간 신축
+            old_n = len(audio)
+            audio = core.time_stretch(audio, sr, fr)
+            f = len(audio) / old_n               # 자막 타이밍도 같은 비율로
+            segs = [(t, s * f, e * f) for t, s, e in segs]
         if trim_on:                          # 가장자리 무음 제거 → 자막 타이밍을 앞 trim 만큼 당김
             audio, lead = core.trim_fade(audio, sr)
             dur = len(audio) / sr
@@ -406,7 +481,8 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         gr.Info("생성 완료 — 아직 저장 안 됨 ([저장] 버튼으로 저장)")
         preview_path = core.save_audio(audio, sr, PREVIEW_DIR, "preview", fmt)
         status = ('<div class="status-ok">생성됨 · 아직 저장 안 함 — '
-                  '아래 <b>[저장]</b> 버튼을 누르면 폴더에 저장돼요.</div>')
+                  '아래 <b>[저장]</b> 버튼을 누르면 폴더에 저장돼요.'
+                  f'{hq_status_note(uses_chatterbox(code, vmap))}</div>')
         return (str(preview_path), status, [], (audio, sr, segs),
                 None, gr.update(choices=[], value=None), gr.update(visible=False), rules_all)
 
@@ -468,14 +544,15 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
 
     paths = [str(p) for p, _ in saved]
     srt_note = " · 자막(.srt) 포함" if srt_on else ""
+    dev_note = hq_status_note(uses_chatterbox(code, vmap))
     cancel_note = " · <b>취소됨</b> (완료분만 저장)" if canceled else ""
     if len(saved) == 1 and not skipped and not canceled:
         p, dur = saved[0]
         # 경로는 gr.HTML 로 렌더되므로 이스케이프 (XSS 방지 + '&' 등 특수문자 표시 안전)
         status = (f'<div class="status-ok">저장 완료 · <code>{html.escape(str(p))}</code>'
-                  f' · {dur:.1f}초{srt_note}</div>')
+                  f' · {dur:.1f}초{srt_note}{dev_note}</div>')
     else:
-        msg = f"{len(saved)}개 저장 완료{srt_note}{cancel_note}"
+        msg = f"{len(saved)}개 저장 완료{srt_note}{dev_note}{cancel_note}"
         if skipped:
             msg += f" · {len(skipped)}개 건너뜀"
         shown = "<br>".join(f"<code>{html.escape(str(p))}</code>" for p, _ in saved[:8])
@@ -531,6 +608,10 @@ def preview(lang_label, voice, speed, mix_on, voice2, mix_ratio, emotion, pace):
                                     speed, emotion=emotion, pace=pace)
     except (ValueError, RuntimeError) as e:
         raise gr.Error(str(e))
+    if core.is_chatterbox(code):
+        dev = hq_device_label()      # 동업자 PC에서 GPU를 타는지 바로 확인용
+        if dev:
+            gr.Info(f"고품질 모드 · {dev}")
     # gr.Audio(type="numpy") 는 (sample_rate, 데이터) 튜플을 받음. int16 로 안전하게 변환.
     return sr, (audio * 32767).clip(-32768, 32767).astype("int16")
 
@@ -587,7 +668,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "- **쉼 태그**: 대본 속 `[쉼:1.5]` 자리에 정확히 1.5초 무음. 줄 전체가 태그뿐이면 자막 없는 쉼.\n"
             "- **자막(.srt)**: 음성과 함께 자막 파일 저장. ‘한 줄 최대 글자 수’로 긴 자막 자동 나누기.\n"
             "- **음량 정규화**: 클립마다 볼륨을 비슷하게 (방송용 = 유튜브 권장 음량).\n"
-            "- **추가 옵션**: 잘못 읽는 단어 교정(발음 교정), 문단 사이 쉼 넣기.\n"
+            "- **재생 배속**: 결과 아래 슬라이더로 듣는 속도를 자유롭게 (0.25~3배) — "
+            "저장되는 파일은 그대로예요.\n"
+            "- **추가 옵션**: 잘못 읽는 단어 교정(발음 교정), 문단 사이 쉼 넣기, "
+            "**저장 배속**(피치는 그대로 두고 파일 자체를 빠르게/느리게 저장 — "
+            "속도 조절이 없는 고품질 모드에서 유용).\n"
             "- **장면별로 나눠 저장**: 대본을 빈 줄로 나눠 장면마다 따로 파일로.\n"
             "- **한국어**: 첫 생성 때 모델을 자동 다운로드해요(인터넷 1회). 속도는 0.7 미만이면 0.7로 조정됩니다.\n"
             "- **고품질·감정 모드**: 더 자연스러운 목소리 + **감정 강도**(차분~극적)와 "
@@ -595,7 +680,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "경향이 있으니 페이스를 낮춰 균형을 잡으면 좋아요. "
             "먼저 폴더의 `SETUP-고품질모드` 를 한 번 실행하세요(첫 사용 시 모델 ~3GB 다운로드). "
             "생성이 느린 대신 품질이 높고(그래픽카드 있으면 빠름), 목소리 섞기만 지원하지 않아요 "
-            "(대화 모드는 참고 목소리들로 가능).\n"
+            "(대화 모드는 참고 목소리들로 가능). 첫 생성은 모델 준비로 1~2분 더 걸리고, "
+            "생성 후엔 상태 줄·미리듣기 알림에 **GPU/CPU 어느 쪽으로 만들었는지** 표시돼요.\n"
             "- **내 목소리 쓰기(고품질 모드)**: `참고목소리` 폴더에 10~20초 녹음 파일(wav/mp3)을 "
             "넣고 **[목소리 새로고침]** 을 누르면 파일 이름이 목소리 목록에 나타나요 — 그 목소리를 "
             "복제해 읽습니다. 반드시 본인·동업자 등 **권리 있는 목소리만** 사용하세요.",
@@ -670,7 +756,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                         "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
             upload = gr.File(file_count="multiple", file_types=[".txt"], elem_classes="upload",
                              label="텍스트 파일(.txt) — 여러 개 선택 가능")
-        with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 · 테이크 수 (선택)", open=False):
+        with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 · 테이크 수 · 저장 배속 (선택)", open=False):
             replace_rules = gr.Textbox(value=INIT_REPLACE, lines=3,
                                        label="발음 교정 (한 줄에 하나: 원문=읽을말) — 언어별로 따로 저장돼요",
                                        info="읽을말은 그 목소리의 언어로 적으세요 — 영어=영어 철자, "
@@ -684,6 +770,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             takes = gr.Slider(1, 5, value=INIT_TAKES, step=1, label="테이크 수",
                               info="같은 대본을 여러 번 생성해 제일 좋은 것 고르기 — _t1, _t2… 로 "
                                    "저장돼요 (단일 대본일 때만, 고품질 모드에서 특히 유용)")
+            file_rate = gr.Slider(0.5, 2.0, value=INIT_FILE_RATE, step=0.05,
+                                  label="저장 배속 — 파일 자체 속도",
+                                  info="1.0 = 그대로. 목소리 톤(피치)은 유지한 채 길이만 바꿔 "
+                                       "저장해요 — 쉼·자막 타이밍도 함께 배속. 속도 슬라이더가 "
+                                       "없는 고품질 모드에서 특히 유용 (미리듣기에는 적용 안 됨)")
 
     with gr.Group(elem_classes="card"):
         with gr.Row():
@@ -714,6 +805,8 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         btn = gr.Button("음성 생성", variant="primary", elem_classes="generate-btn", scale=5)
         cancel_btn = gr.Button("취소", size="lg", scale=1)
     audio_out = gr.Audio(label="결과 (재생 / 다운로드)", type="filepath", elem_classes="audio-out")
+    play_rate = gr.Slider(0.25, 3.0, value=1.0, step=0.05, label="재생 배속",
+                          info="미리듣기·결과를 듣는 속도만 자유롭게 (저장되는 파일은 그대로) · 1.0 = 원래 속도")
     status = gr.HTML(elem_id="status")
     with gr.Row(elem_classes="folder-tools"):
         save_btn = gr.Button("저장", size="sm")
@@ -749,9 +842,10 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
 
     lang.change(swap_rules, inputs=[lang, prev_lang_state, replace_rules, rules_state],
                 outputs=[replace_rules, rules_state, prev_lang_state])
-    lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
-    text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
-    speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
+    lang.change(update_stats, inputs=[text, lang, speed, file_rate], outputs=stats)
+    text.change(update_stats, inputs=[text, lang, speed, file_rate], outputs=stats)
+    speed.change(update_stats, inputs=[text, lang, speed, file_rate], outputs=stats)
+    file_rate.change(update_stats, inputs=[text, lang, speed, file_rate], outputs=stats)
     mix_on.change(lambda on, lang_label: gr.update(
                       visible=on and core.supports_mix(core.LANGS[lang_label]["code"])),
                   inputs=[mix_on, lang], outputs=mix_row)
@@ -858,11 +952,14 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     downloads_btn.click(lambda: str(Path.home() / "Downloads"), outputs=folder)
     default_btn.click(lambda: DEFAULT_OUTPUT, outputs=folder)
     open_btn.click(open_folder, inputs=folder, outputs=[])
+    # 서버 왕복 없이 브라우저에서 바로 배속 적용 (재생 중에도 즉시 반영)
+    play_rate.change(None, inputs=[play_rate], outputs=[],
+                     js="(v) => { window.__ttsSetRate(v); }")
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
                       autosave, dlg_on] + spk_names + spk_voices + spk_langs +
-                     [srt_max, emotion, pace, takes, rules_state],
+                     [srt_max, emotion, pace, takes, file_rate, rules_state],
               outputs=[audio_out, status, last_saved, pending_state,
                        scenes_state, scene_dd, scene_row, rules_state],
               show_progress_on=audio_out).then(
@@ -872,7 +969,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                     mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules,
                     trim_on, dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
                     spk_v1, spk_v2, spk_v3, spk_v4, spk_l1, spk_l2, spk_l3, spk_l4,
-                    srt_max, emotion, pace, rules_dict):
+                    srt_max, emotion, pace, file_rate, rules_dict):
         """선택한 장면 하나만 같은 설정으로 다시 생성 (파일명_NN (2).wav 처럼 새 파일로)."""
         if not scenes or not scene_label:
             raise gr.Error("다시 만들 장면을 골라 주세요. (먼저 '장면별로 나눠 저장'으로 생성)")
@@ -884,7 +981,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                        norm_mode, replace_rules, trim_on, False, True,
                        dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
                        spk_v1, spk_v2, spk_v3, spk_v4, spk_l1, spk_l2, spk_l3, spk_l4,
-                       srt_max, emotion, pace, 1, rules_dict,
+                       srt_max, emotion, pace, 1, file_rate, rules_dict,
                        progress=lambda *a, **k: None)
         return out[0], out[1], out[2], out[3]     # 장면 목록·드롭다운은 그대로 유지
 
@@ -892,7 +989,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                     inputs=[scene_dd, scenes_state, lang, voice, speed, filename, folder, fmt,
                             mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode,
                             replace_rules, trim_on, dlg_on] + spk_names + spk_voices + spk_langs +
-                           [srt_max, emotion, pace, rules_state],
+                           [srt_max, emotion, pace, file_rate, rules_state],
                     outputs=[audio_out, status, last_saved, pending_state],
                     show_progress_on=audio_out).then(
                     update_recent, inputs=[last_saved, recent_state],
