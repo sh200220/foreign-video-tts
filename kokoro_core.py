@@ -99,6 +99,8 @@ def get_pipeline(lang_code):
 
 
 def voices_for(lang_code):
+    if is_chatterbox(lang_code):      # "기본 목소리" + 참고목소리/ 폴더의 파일들 (동적)
+        return chatterbox_engine.list_voices()
     return VOICES.get(lang_code, [])
 
 
@@ -115,7 +117,8 @@ def _synth_line(line_text, lang_code, voice, speed, emotion=None, pace=None):
     if is_chatterbox(lang_code):
         e = chatterbox_engine.DEFAULT_EMOTION if emotion is None else float(emotion)
         p = chatterbox_engine.DEFAULT_PACE if pace is None else float(pace)
-        return chatterbox_engine.synth_line(line_text, lang_code, e, p)
+        v = voice if isinstance(voice, str) and voice else chatterbox_engine.DEFAULT_VOICE
+        return chatterbox_engine.synth_line(line_text, lang_code, e, p, voice=v)
     pipe = get_pipeline(lang_code)
     chunks = [_to_numpy(r[2]).astype("float32") for r in pipe(line_text, voice=voice, speed=speed)]
     return np.concatenate(chunks) if chunks else np.zeros(0, dtype="float32")

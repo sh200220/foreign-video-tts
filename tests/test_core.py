@@ -242,7 +242,25 @@ def test_chatterbox_langs_registered():
         assert label in core.LANGS, f"LANGS 에 {label} 이 있어야 함"
         assert core.LANGS[label]["code"] == code
         assert core.CHATTERBOX_CODES[code] == base
-        assert core.voices_for(code) == ["기본 목소리"]
+        voices = core.voices_for(code)      # 참고목소리 폴더 내용에 따라 늘어날 수 있음
+        assert voices[0] == "기본 목소리", voices
+
+
+def test_chatterbox_reference_voices():
+    import chatterbox_engine as cb
+    with tempfile.TemporaryDirectory() as d:
+        assert cb.list_voices(d) == ["기본 목소리"], "빈 폴더면 기본 목소리만"
+        (Path(d) / "사장님.wav").write_bytes(b"RIFF")
+        (Path(d) / "동업자.mp3").write_bytes(b"ID3")
+        (Path(d) / "메모.txt").write_bytes(b"x")         # 오디오 아님 -> 제외
+        assert cb.list_voices(d) == ["기본 목소리", "동업자", "사장님"]
+        assert cb._voice_path("기본 목소리", d) is None
+        assert cb._voice_path("사장님", d).name == "사장님.wav"
+        try:
+            cb._voice_path("없는이름", d)
+            assert False, "없는 목소리는 RuntimeError 여야 함"
+        except RuntimeError as e:
+            assert "새로고침" in str(e)
 
 
 def test_supports_mix():

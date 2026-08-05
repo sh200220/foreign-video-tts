@@ -24,7 +24,9 @@ import numpy as np
 
 SAMPLE_RATE = 24000                       # Chatterbox(S3Gen) 출력 샘플레이트(Hz)
 LANGS = {"ce": "en", "cj": "ja", "ck": "ko"}   # 내부 코드 -> chatterbox 언어 코드
-VOICES = ["기본 목소리"]                   # 내장 기본 화자 1개 (클로닝은 추후)
+DEFAULT_VOICE = "기본 목소리"              # 내장 기본 화자
+VOICES = [DEFAULT_VOICE]                  # 기본 목록 (참고목소리 폴더로 확장 — list_voices)
+PROMPT_EXTS = (".wav", ".mp3", ".flac", ".ogg", ".m4a")   # 참고 목소리로 인식할 확장자
 DEFAULT_EMOTION = 0.5                     # exaggeration 기본값 (0=밋밋 ~ 1=과장)
 EMOTION_MIN, EMOTION_MAX = 0.0, 1.0       # UI 슬라이더 범위
 DEFAULT_PACE = 0.5                        # cfg_weight 기본값 (낮음=느긋 ~ 높음=빠릿)
@@ -35,6 +37,32 @@ _VENV_PY = _ROOT / (".venv-chatterbox/Scripts/python.exe" if sys.platform == "wi
                     else ".venv-chatterbox/bin/python")
 _WORKER = _ROOT / "chatterbox_worker.py"
 _TMP = Path(tempfile.gettempdir()) / "foreign-video-tts-hq"
+VOICES_DIR = _ROOT / "참고목소리"          # 여기에 wav/mp3 를 넣으면 목소리로 등장
+
+
+def list_voices(voices_dir=None):
+    """"기본 목소리" + 참고목소리 폴더의 오디오 파일 이름(확장자 제외) 목록."""
+    d = Path(voices_dir) if voices_dir else VOICES_DIR
+    names = []
+    if d.is_dir():
+        names = sorted({p.stem for p in d.iterdir()
+                        if p.is_file() and p.suffix.lower() in PROMPT_EXTS})
+    return [DEFAULT_VOICE] + names
+
+
+def _voice_path(voice, voices_dir=None):
+    """목소리 이름 -> 참고 오디오 경로 (기본 목소리는 None). 없으면 RuntimeError."""
+    if not voice or voice == DEFAULT_VOICE:
+        return None
+    d = Path(voices_dir) if voices_dir else VOICES_DIR
+    for ext in PROMPT_EXTS:
+        p = d / f"{voice}{ext}"
+        if p.is_file():
+            return p
+    raise RuntimeError(
+        f"참고 목소리 '{voice}' 파일을 찾을 수 없습니다. "
+        f"'{d.name}' 폴더에 {voice}.wav (또는 mp3) 가 있는지 확인하고 "
+        "목소리 목록을 새로고침해 주세요.")
 
 _proc = None          # 상주 워커 프로세스
 _device = None        # 워커가 보고한 장치 ("cuda"/"cpu")
@@ -109,17 +137,21 @@ def shutdown():
     _proc = None
 
 
-def synth_line(text, lang_code, emotion=DEFAULT_EMOTION, pace=DEFAULT_PACE):
+def synth_line(text, lang_code, emotion=DEFAULT_EMOTION, pace=DEFAULT_PACE,
+               voice=DEFAULT_VOICE):
     """한 줄 합성 -> float32 1-D numpy. lang_code 는 'ce'/'cj'/'ck'.
 
     emotion = exaggeration(표현 강도), pace = cfg_weight(낮음=느긋, 높음=빠릿).
-    자동 보정 없이 사용자가 준 값을 그대로 쓴다."""
+    자동 보정 없이 사용자가 준 값을 그대로 쓴다.
+    voice: "기본 목소리" 또는 참고목소리 폴더의 파일 이름(확장자 제외) — 그 목소리를 복제."""
     import soundfile as sf
+    prompt = _voice_path(voice)
     _TMP.mkdir(parents=True, exist_ok=True)
     out = _TMP / f"line_{uuid.uuid4().hex}.wav"
     req = {"text": text, "lang": LANGS[lang_code],
            "exaggeration": float(emotion), "cfg": float(pace),
-           "out": str(out)}
+           "out": str(out),
+           "prompt": str(prompt) if prompt else None}
     proc = _get_proc()
     try:
         proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")

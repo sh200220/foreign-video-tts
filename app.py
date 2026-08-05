@@ -505,8 +505,11 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "**말 페이스**(느긋~빠릿) 슬라이더로 직접 조절. 감정을 올리면 말이 빨라지는 "
             "경향이 있으니 페이스를 낮춰 균형을 잡으면 좋아요. "
             "먼저 폴더의 `SETUP-고품질모드` 를 한 번 실행하세요(첫 사용 시 모델 ~3GB 다운로드). "
-            "생성이 느린 대신 품질이 높고(그래픽카드 있으면 빠름), 목소리는 내장 1개라 "
-            "목소리 섞기·대화 모드는 지원하지 않아요.",
+            "생성이 느린 대신 품질이 높고(그래픽카드 있으면 빠름), "
+            "목소리 섞기·대화 모드는 지원하지 않아요.\n"
+            "- **내 목소리 쓰기(고품질 모드)**: `참고목소리` 폴더에 10~20초 녹음 파일(wav/mp3)을 "
+            "넣고 **[목소리 새로고침]** 을 누르면 파일 이름이 목소리 목록에 나타나요 — 그 목소리를 "
+            "복제해 읽습니다. 반드시 본인·동업자 등 **권리 있는 목소리만** 사용하세요.",
             elem_classes="hint")
 
     with gr.Group(elem_classes="card"):
@@ -530,6 +533,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         with gr.Row():
             preview_btn = gr.Button("미리듣기", size="sm", scale=0, min_width=120,
                                     elem_classes="preview-btn")
+            refresh_btn = gr.Button("목소리 새로고침", size="sm", scale=0, min_width=140)
         preview_audio = gr.Audio(label="미리듣기 (선택한 목소리 샘플)", type="numpy",
                                  autoplay=True, elem_classes=["audio-out", "preview-audio"])
 
@@ -608,6 +612,15 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                       visible=on and core.supports_mix(core.LANGS[lang_label]["code"])),
                   inputs=[mix_on, lang], outputs=mix_row)
     dlg_on.change(lambda on: gr.update(visible=on), inputs=dlg_on, outputs=dlg_col)
+
+    def refresh_voices(lang_label, cur_voice, cur_voice2):
+        """참고목소리 폴더를 다시 읽어 목소리 목록 갱신 (선택 값은 가능하면 유지)."""
+        voices = core.voices_for(core.LANGS[lang_label]["code"])
+        keep = cur_voice if cur_voice in voices else core.LANGS[lang_label]["default_voice"]
+        keep2 = cur_voice2 if cur_voice2 in voices else _second_voice(voices)
+        return gr.update(choices=voices, value=keep), gr.update(choices=voices, value=keep2)
+
+    refresh_btn.click(refresh_voices, inputs=[lang, voice, voice2], outputs=[voice, voice2])
     preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio, emotion, pace],
                       outputs=preview_audio)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
