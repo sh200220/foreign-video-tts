@@ -9,6 +9,7 @@ REM [주의] 이 스크립트는 자기 자신도 최신 버전으로 덮어씁�
 REM 실행 중인 파일이 바뀌면 창에 이상한 글자가 나오기 때문에,
 REM 임시 폴더에 복사본을 만들어 그 복사본이 업데이트를 진행합니다.
 if /i "%~1"=="__RUN" goto run
+del /f /q "%TEMP%\fvt-update-run.bat" >nul 2>&1
 copy /y "%~f0" "%TEMP%\fvt-update-run.bat" >nul 2>&1
 if not exist "%TEMP%\fvt-update-run.bat" goto run
 REM call 없이 실행 - 여기서 제어가 넘어가고 이 파일은 더 읽지 않습니다.
