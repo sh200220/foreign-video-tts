@@ -144,6 +144,126 @@ def test_save_audio_collision_increments():
         assert p2.name == "clip (2).wav", f"충돌 시 증가 실패: {p2.name}"
 
 
+# ---------------- 한국어 엔진 등록 / 속도 클램프 ----------------
+
+def test_korean_lang_registered():
+    assert "한국어" in core.LANGS, "LANGS 에 한국어가 있어야 함"
+    assert core.LANGS["한국어"]["code"] == "k"
+    assert core.LANGS["한국어"]["default_voice"] == "F1"
+    assert core.voices_for("k") == ["F1", "F2", "F3", "F4", "F5",
+                                    "M1", "M2", "M3", "M4", "M5"]
+
+
+def test_sample_rate_per_engine():
+    assert core.sample_rate_for("a") == 24000
+    assert core.sample_rate_for("j") == 24000
+    assert core.sample_rate_for("k") == 44100
+
+
+def test_clamp_speed():
+    assert core.clamp_speed("k", 0.5) == 0.7, "한국어는 0.7 미만 클램프"
+    assert core.clamp_speed("k", 2.5) == 2.0
+    assert core.clamp_speed("k", 1.0) == 1.0
+    assert core.clamp_speed("a", 0.5) == 0.5, "Kokoro 는 그대로"
+
+
+def test_blend_korean_raises():
+    try:
+        core.blend_voices("k", "F1", "F2", 0.5)
+        assert False, "한국어 blend 는 ValueError 여야 함"
+    except ValueError:
+        pass
+
+
+# ---------------- 인라인 쉼 태그 ----------------
+
+def test_pause_tags_midline():
+    parts = core.split_pause_tags("안녕하세요 [쉼:1.5] 반갑습니다")
+    assert parts == [("text", "안녕하세요"), ("pause", 1.5), ("text", "반갑습니다")], parts
+
+
+def test_pause_tags_fullwidth_and_clamp():
+    parts = core.split_pause_tags("[쉼：99]")
+    assert parts == [("pause", 10.0)], f"전각 콜론 + 10초 클램프 실패: {parts}"
+
+
+def test_pause_tags_invalid_kept_as_text():
+    parts = core.split_pause_tags("[쉼:abc] 본문")
+    assert parts == [("text", "[쉼:abc] 본문")], parts
+
+
+def test_pause_tags_none():
+    assert core.split_pause_tags("그냥 문장") == [("text", "그냥 문장")]
+
+
+def test_pause_tags_empty_line():
+    assert core.split_pause_tags("   ") == []
+
+
+def test_strip_pause_tags_for_caption():
+    assert core.strip_pause_tags("앞 [쉼:2] 뒤") == "앞 뒤"
+
+
+# ---------------- 대화 모드 (화자 매핑) ----------------
+
+def test_parse_voice_map():
+    m = core.parse_voice_map("A=af_heart\n B = am_michael \n\n")
+    assert m == {"A": "af_heart", "B": "am_michael"}, m
+
+
+def test_parse_voice_map_empty():
+    assert core.parse_voice_map("") == {}
+    assert core.parse_voice_map(None) == {}
+
+
+def test_parse_voice_map_bad_line_raises():
+    try:
+        core.parse_voice_map("A-af_heart")
+        assert False, "= 없는 줄은 ValueError 여야 함"
+    except ValueError:
+        pass
+
+
+def test_match_speaker():
+    vm = {"A": "af_heart", "나레이터": "am_adam"}
+    assert core.match_speaker("A: 안녕", vm) == ("af_heart", "안녕")
+    assert core.match_speaker("나레이터： 시작합니다", vm) == ("am_adam", "시작합니다")
+    assert core.match_speaker("A : 공백 허용", vm) == ("af_heart", "공백 허용")
+    assert core.match_speaker("참고: 이 줄은 그대로", vm) == (None, "참고: 이 줄은 그대로")
+    assert core.match_speaker("콜론 없는 줄", vm) == (None, "콜론 없는 줄")
+
+
+# ---------------- 자막 줄 규격화 ----------------
+
+def test_srt_split_disabled():
+    segs = [("아주 긴 자막 텍스트", 0.0, 5.0)]
+    assert core.split_segments_for_srt(segs, 0) == segs
+    assert core.split_segments_for_srt(segs, None) == segs
+
+
+def test_srt_split_space_boundary_and_timing():
+    segs = [("hello world again", 0.0, 3.0)]
+    out = core.split_segments_for_srt(segs, 11)
+    assert [t for t, _, _ in out] == ["hello world", "again"], out
+    assert out[0][1] == 0.0 and abs(out[-1][2] - 3.0) < 1e-6
+    assert abs(out[0][2] - out[1][1]) < 1e-6, "조각들이 이어져야 함"
+    d0 = out[0][2] - out[0][1]
+    d1 = out[1][2] - out[1][1]
+    assert d0 > d1, "긴 조각이 더 긴 시간을 가져야 함"
+
+
+def test_srt_split_punct_boundary_cjk():
+    segs = [("こんにちは。ようこそ、皆さん", 0.0, 4.0)]
+    out = core.split_segments_for_srt(segs, 8)
+    assert out[0][0] == "こんにちは。", f"문장부호 뒤 분할 실패: {out[0][0]}"
+
+
+def test_srt_split_forced():
+    segs = [("가나다라마바사아자차", 0.0, 2.0)]
+    out = core.split_segments_for_srt(segs, 4)
+    assert [t for t, _, _ in out] == ["가나다라", "마바사아", "자차"], out
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     print(f"kokoro_core 순수 함수 테스트 - {len(tests)}개\n")
