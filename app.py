@@ -387,15 +387,18 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         preview_path = core.save_audio(audio, sr, PREVIEW_DIR, "preview", fmt)
         status = ('<div class="status-ok">생성됨 · 아직 저장 안 함 — '
                   '아래 <b>[저장]</b> 버튼을 누르면 폴더에 저장돼요.</div>')
-        return str(preview_path), status, [], (audio, sr, segs)
+        return (str(preview_path), status, [], (audio, sr, segs),
+                None, gr.update(choices=[], value=None), gr.update(visible=False))
 
     # 작업 목록: (텍스트소스, 파일여부, 저장이름). 업로드가 있으면 우선(장면분할·테이크 무시).
+    scene_blocks = None
     if files:
         jobs = [(f, True, Path(f).stem) for f in files]
     elif scene_split:                        # 빈 줄로 장면을 나눠 각각 저장
         blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
         jobs = [(b, False, f"{filename}_{i + 1:02d}") for i, b in enumerate(blocks)] \
             or [(text, False, filename)]
+        scene_blocks = blocks or [text]      # '장면만 다시 생성' UI 용
     elif takes_n > 1:                        # 같은 대본을 여러 번 생성해 고르기
         jobs = [(text, False, f"{filename}_t{n}") for n in range(1, takes_n + 1)]
     else:
@@ -428,9 +431,18 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
     elif saved:
         gr.Info(f"생성 완료 — {len(saved)}개 저장")
 
+    # 장면 분할 생성이면 '장면만 다시 생성' UI를 채운다 (아니면 숨김·비움)
+    if scene_blocks:
+        scene_labels = [f"{i + 1:02d} — {b.splitlines()[0][:18]}" for i, b in enumerate(scene_blocks)]
+        scene_upd = (scene_blocks, gr.update(choices=scene_labels, value=None),
+                     gr.update(visible=True))
+    else:
+        scene_upd = (None, gr.update(choices=[], value=None), gr.update(visible=False))
+
     if not saved:
         if canceled:
-            return None, '<div class="status-ok">취소됨 · 저장된 파일 없음</div>', [], None
+            return (None, '<div class="status-ok">취소됨 · 저장된 파일 없음</div>', [], None,
+                    *scene_upd)
         raise gr.Error(skipped[0][1] if (skipped and total == 1)
                        else "생성된 파일이 없습니다. " + " / ".join(f"{b} ({m})" for b, m in skipped))
 
@@ -450,7 +462,7 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
         if len(saved) > 8:
             shown += f"<br>… 외 {len(saved) - 8}개"
         status = f'<div class="status-ok">{msg}</div><div class="stat-list">{shown}</div>'
-    return paths[0], status, paths, None
+    return (paths[0], status, paths, None, *scene_upd)
 
 
 def save_pending(pending, filename, folder, fmt, add_ts, srt_on, srt_max):
@@ -668,10 +680,15 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     with gr.Row(elem_classes="folder-tools"):
         save_btn = gr.Button("저장", size="sm")
         open_btn = gr.Button("저장 폴더 열기", size="sm")
+    with gr.Row(visible=False) as scene_row:      # 장면 분할 생성 후에만 표시
+        scene_dd = gr.Dropdown([], label="다시 만들 장면 (마음에 안 드는 장면만 골라서)",
+                               scale=3)
+        scene_btn = gr.Button("이 장면만 다시 생성", size="sm", scale=1)
     recent_html = gr.HTML(elem_id="recent")
     last_saved = gr.State()
     recent_state = gr.State([])
     pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
+    scenes_state = gr.State()       # 장면 분할로 만든 블록 목록 (장면 재생성용)
 
     lang.change(on_lang_change, inputs=[lang, mix_on],
                 outputs=[voice, voice2, mix_on, mix_row, speed, hq_row] + spk_voices)
@@ -750,9 +767,38 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
                       autosave, dlg_on] + spk_names + spk_voices + [srt_max, emotion, pace, takes],
-              outputs=[audio_out, status, last_saved, pending_state],
+              outputs=[audio_out, status, last_saved, pending_state,
+                       scenes_state, scene_dd, scene_row],
               show_progress_on=audio_out).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])
+
+    def regen_scene(scene_label, scenes, lang_label, voice, speed, filename, folder, fmt,
+                    mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules,
+                    trim_on, dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
+                    spk_v1, spk_v2, spk_v3, spk_v4, srt_max, emotion, pace):
+        """선택한 장면 하나만 같은 설정으로 다시 생성 (파일명_NN (2).wav 처럼 새 파일로)."""
+        if not scenes or not scene_label:
+            raise gr.Error("다시 만들 장면을 골라 주세요. (먼저 '장면별로 나눠 저장'으로 생성)")
+        idx = int(str(scene_label).split(" — ")[0]) - 1
+        if not 0 <= idx < len(scenes):
+            raise gr.Error("장면 목록이 바뀌었어요. 다시 생성 후 골라 주세요.")
+        out = generate(lang_label, voice, speed, scenes[idx], None, f"{filename}_{idx + 1:02d}",
+                       folder, fmt, mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec,
+                       norm_mode, replace_rules, trim_on, False, True,
+                       dlg_on, spk_n1, spk_n2, spk_n3, spk_n4,
+                       spk_v1, spk_v2, spk_v3, spk_v4, srt_max, emotion, pace, 1,
+                       progress=lambda *a, **k: None)
+        return out[0], out[1], out[2], out[3]     # 장면 목록·드롭다운은 그대로 유지
+
+    scene_btn.click(regen_scene,
+                    inputs=[scene_dd, scenes_state, lang, voice, speed, filename, folder, fmt,
+                            mix_on, voice2, mix_ratio, add_ts, srt_on, gap_sec, norm_mode,
+                            replace_rules, trim_on, dlg_on] + spk_names + spk_voices +
+                           [srt_max, emotion, pace],
+                    outputs=[audio_out, status, last_saved, pending_state],
+                    show_progress_on=audio_out).then(
+                    update_recent, inputs=[last_saved, recent_state],
+                    outputs=[recent_html, recent_state])
     save_btn.click(save_pending,
                    inputs=[pending_state, filename, folder, fmt, add_ts, srt_on, srt_max],
                    outputs=[status, last_saved, pending_state]).then(
