@@ -318,6 +318,16 @@ def test_blend_chatterbox_raises():
         pass
 
 
+def test_chatterbox_dialogue_validation():
+    """고품질 모드도 대화 모드 지원 — 없는 목소리는 모델 로드 전에 ValueError."""
+    try:
+        core.synthesize_segments("A: 안녕", "ck", "기본 목소리",
+                                 voice_map={"A": "없는목소리"})
+        assert False, "없는 목소리는 ValueError 여야 함"
+    except ValueError as e:
+        assert "가능한 목소리" in str(e)
+
+
 def test_chatterbox_control_ranges():
     import chatterbox_engine as cb
     assert cb.EMOTION_MIN <= cb.DEFAULT_EMOTION <= cb.EMOTION_MAX

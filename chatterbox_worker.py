@@ -47,8 +47,8 @@ def main():
         return 1
     say({"ready": True, "device": device, "sr": int(model.sr)})
 
-    default_conds = model.conds     # 내장 기본 목소리 조건
-    cur_prompt = None               # 마지막으로 준비한 참고 목소리 경로 (캐시 키)
+    conds_cache = {None: model.conds}   # 목소리(prompt 경로) -> 준비된 조건. None = 내장 기본
+    MAX_CACHE = 8                       # 대화 모드에서 화자가 번갈아 나와도 재계산 없이 전환
 
     for line in sys.stdin:
         line = line.strip()
@@ -58,12 +58,14 @@ def main():
             req = json.loads(line)
             ex = float(req.get("exaggeration", 0.5))
             prompt = req.get("prompt") or None
-            if prompt != cur_prompt:            # 목소리가 바뀔 때만 조건 재계산
-                if prompt:
-                    model.prepare_conditionals(prompt, exaggeration=ex)
-                else:
-                    model.conds = default_conds
-                cur_prompt = prompt
+            if prompt in conds_cache:
+                model.conds = conds_cache[prompt]
+            else:
+                model.prepare_conditionals(prompt, exaggeration=ex)
+                if len(conds_cache) >= MAX_CACHE:      # 가장 오래된 참고 목소리부터 정리
+                    oldest = next(k for k in conds_cache if k is not None)
+                    del conds_cache[oldest]
+                conds_cache[prompt] = model.conds
             wav = model.generate(               # prompt 없이 호출 -> 캐시된 조건 재사용
                 req["text"],
                 language_id=req["lang"],

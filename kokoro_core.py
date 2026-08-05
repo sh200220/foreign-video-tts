@@ -165,8 +165,6 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
         raise ValueError("대본이 비어 있습니다. 텍스트를 입력해 주세요.")
     sr = sample_rate_for(lang_code)
     speed = clamp_speed(lang_code, speed)
-    if is_chatterbox(lang_code):
-        voice_map = None            # 내장 목소리 1개뿐 — 대화 모드 무시(도움말에 명시)
     if voice_map:
         valid = voices_for(lang_code)
         for name, v in voice_map.items():
