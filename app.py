@@ -101,7 +101,21 @@ INIT_TRIM = bool(_s.get("trim_on", False))
 INIT_SCENE = bool(_s.get("scene_split", False))
 INIT_AUTOSAVE = bool(_s.get("autosave", True))   # 생성 시 자동 저장 (기본 ON; 끄면 [저장] 버튼으로)
 INIT_DLG = bool(_s.get("dlg_on", False))         # 대화 모드 (화자별 목소리)
-INIT_DLG_MAP = _s.get("dlg_map", "") or ""
+# 화자 슬롯 4개: [[이름, 목소리], ...]. 구버전 텍스트 매핑(dlg_map)은 슬롯으로 이전.
+_spk_raw = _s.get("spk") or []
+if not _spk_raw and (_s.get("dlg_map") or "").strip():
+    try:
+        _spk_raw = [[k, v] for k, v in core.parse_voice_map(_s["dlg_map"]).items()]
+    except ValueError:
+        _spk_raw = []
+INIT_SPK = [["", None] for _ in range(4)]
+for _i, _item in enumerate(_spk_raw[:4]):
+    try:
+        _nm, _vv = str(_item[0]).strip(), str(_item[1]).strip()
+    except (TypeError, IndexError):
+        continue
+    if _nm and _nm != core.RESET_NAME:
+        INIT_SPK[_i] = [_nm, _vv if _vv in INIT_VOICES else None]
 try:
     INIT_SRT_MAX = int(_s.get("srt_max", 0))     # 자막 한 줄 최대 글자 수 (0=제한 없음)
 except (TypeError, ValueError):
@@ -251,12 +265,14 @@ def on_lang_change(lang_label, mix_on_val):
     voices = core.voices_for(code)
     can_mix = core.supports_mix(code)
     is_cb = core.is_chatterbox(code)
+    slot_upd = [gr.update(choices=voices, value=None) for _ in range(4)]  # 화자 슬롯도 언어 따라
     return (gr.update(choices=voices, value=info["default_voice"]),
             gr.update(choices=voices, value=_second_voice(voices)),
             gr.update(visible=can_mix),
             gr.update(visible=can_mix and bool(mix_on_val)),
             gr.update(visible=not is_cb),
-            gr.update(visible=is_cb))
+            gr.update(visible=is_cb),
+            *slot_upd)
 
 
 def update_stats(text, lang_label, speed):
@@ -286,9 +302,11 @@ def apply_replacements(text, rules):
 
 def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_on, voice2, mix_ratio,
              add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split, autosave,
-             dlg_on, dlg_map, srt_max, emotion, pace, progress=gr.Progress()):
+             dlg_on, spk_n1, spk_n2, spk_n3, spk_n4, spk_v1, spk_v2, spk_v3, spk_v4,
+             srt_max, emotion, pace, progress=gr.Progress()):
     code = core.LANGS[lang_label]["code"]
     out_folder = folder or DEFAULT_OUTPUT
+    spk_pairs = [(spk_n1, spk_v1), (spk_n2, spk_v2), (spk_n3, spk_v3), (spk_n4, spk_v4)]
 
     # 마지막 선택을 기억(다음 실행 때 복원)
     save_settings({"lang": lang_label, "voice": voice, "voice2": voice2, "speed": speed,
@@ -296,18 +314,27 @@ def generate(lang_label, voice, speed, text, files, filename, folder, fmt, mix_o
                    "srt_on": bool(srt_on), "gap_sec": float(gap_sec or 0.0), "norm_mode": norm_mode,
                    "replace_rules": replace_rules or "", "trim_on": bool(trim_on),
                    "scene_split": bool(scene_split), "autosave": bool(autosave),
-                   "dlg_on": bool(dlg_on), "dlg_map": dlg_map or "",
+                   "dlg_on": bool(dlg_on),
+                   "spk": [[(n or "").strip(), v or ""] for n, v in spk_pairs],
                    "srt_max": int(srt_max or 0), "emotion": float(emotion or 0.5),
                    "pace": float(pace or 0.5)})
 
-    # 대화 모드 화자 매핑 (형식 오류는 바로 안내). 대화 모드 중엔 목소리 섞기 무시.
-    # 고품질 모드는 내장 목소리 1개라 대화 모드를 지원하지 않음(무시).
+    # 대화 모드 화자 매핑 (슬롯 -> dict). 대화 모드 중엔 목소리 섞기 무시.
+    # 고품질 모드는 내장/참고 목소리 체계가 달라 대화 모드를 지원하지 않음(무시).
     vmap = None
     if dlg_on and not core.is_chatterbox(code):
-        try:
-            vmap = core.parse_voice_map(dlg_map) or None
-        except ValueError as e:
-            raise gr.Error(str(e))
+        vmap = {}
+        for nm, vv in spk_pairs:
+            nm = (nm or "").strip()
+            if not nm:
+                continue
+            if nm == core.RESET_NAME:
+                raise gr.Error(f"'{core.RESET_NAME}'은 기본 목소리 복귀용 예약어라 "
+                               "화자 이름으로 쓸 수 없어요.")
+            if not vv:
+                raise gr.Error(f"화자 '{nm}'의 목소리를 골라 주세요.")
+            vmap[nm] = vv
+        vmap = vmap or None
     use_mix = mix_on and core.supports_mix(code) and not vmap
 
     try:
@@ -493,7 +520,9 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
             "3. **포맷**(영상 편집엔 WAV, 공유엔 MP3)과 **저장 폴더**를 고릅니다.\n"
             "4. **[음성 생성]** → 폴더에 저장되고 바로 재생·다운로드됩니다.\n\n"
             "- **목소리 섞기**: 두 목소리를 비율로 혼합해 새 음색 (한국어는 미지원).\n"
-            "- **대화 모드**: 화자를 등록하고 대본 줄 앞에 `이름:`을 붙이면 줄마다 다른 목소리로.\n"
+            "- **대화 모드**: 화자 슬롯에 이름·목소리를 넣고(또는 **[대본에서 화자 자동 인식]**) "
+            "대본 줄 앞에 `이름:` — 한 번 쓰면 **다음 화자 표시까지 유지**되고, `기본:`으로 "
+            "기본 목소리에 복귀해요.\n"
             "- **쉼 태그**: 대본 속 `[쉼:1.5]` 자리에 정확히 1.5초 무음. 줄 전체가 태그뿐이면 자막 없는 쉼.\n"
             "- **자막(.srt)**: 음성과 함께 자막 파일 저장. ‘한 줄 최대 글자 수’로 긴 자막 자동 나누기.\n"
             "- **음량 정규화**: 클립마다 볼륨을 비슷하게 (방송용 = 유튜브 권장 음량).\n"
@@ -542,12 +571,21 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
         stats = gr.Markdown("글자 수 0", elem_classes="stats")
         dlg_on = gr.Checkbox(value=INIT_DLG, label="대화 모드 — 줄 앞 ‘이름:’ 표시로 화자별 목소리")
         with gr.Column(visible=INIT_DLG) as dlg_col:
-            dlg_map = gr.Textbox(value=INIT_DLG_MAP, lines=3,
-                                 label="화자 지정 (한 줄에 하나: 이름=목소리)",
-                                 info="대본의 ‘이름: 내용’ 줄만 그 목소리로 읽어요. 등록 안 된 줄은 "
-                                      "기본 목소리로 읽고, 자막에는 이름을 빼고 기록합니다. "
-                                      "대화 모드 중에는 목소리 섞기가 무시됩니다.",
-                                 placeholder="A=af_heart\nB=am_michael")
+            gr.Markdown("대본 줄 앞에 **이름:** 을 쓰면 그 화자가 **다음 화자 표시까지 유지**돼요 "
+                        "(긴 대사는 이름 한 번만). **기본:** 이라고 쓰면 기본 목소리(내레이션)로 "
+                        "돌아옵니다. 자막에는 이름이 빠지고, 대화 모드 중 목소리 섞기는 무시돼요.",
+                        elem_classes="hint")
+            spk_names, spk_voices, spk_btns = [], [], []
+            for _si in range(4):
+                with gr.Row():
+                    _n = gr.Textbox(value=INIT_SPK[_si][0], label=f"화자 {_si + 1} 이름",
+                                    placeholder="예: 민수", scale=2)
+                    _v = gr.Dropdown(INIT_VOICES, value=INIT_SPK[_si][1],
+                                     label="목소리", scale=3)
+                    _b = gr.Button("듣기", size="sm", scale=0, min_width=64)
+                    spk_names.append(_n); spk_voices.append(_v); spk_btns.append(_b)
+            detect_btn = gr.Button("대본에서 화자 자동 인식 — ‘이름:’ 을 찾아 빈 슬롯 채우기",
+                                   size="sm")
         with gr.Accordion("파일로 만들기 — .txt 여러 개 올리면 한 번에 (선택)", open=False):
             gr.Markdown("파일을 올리면 위 대본 대신 **각 파일 내용**으로 만들고, **각 파일 이름**으로 저장됩니다 "
                         "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
@@ -602,7 +640,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     pending_state = gr.State()      # 자동저장 OFF로 만든 미저장 결과 (audio, sr, segs)
 
     lang.change(on_lang_change, inputs=[lang, mix_on],
-                outputs=[voice, voice2, mix_on, mix_row, speed, hq_row])
+                outputs=[voice, voice2, mix_on, mix_row, speed, hq_row] + spk_voices)
     lang.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     text.change(update_stats, inputs=[text, lang, speed], outputs=stats)
     speed.change(update_stats, inputs=[text, lang, speed], outputs=stats)
@@ -611,14 +649,62 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                   inputs=[mix_on, lang], outputs=mix_row)
     dlg_on.change(lambda on: gr.update(visible=on), inputs=dlg_on, outputs=dlg_col)
 
-    def refresh_voices(lang_label, cur_voice, cur_voice2):
-        """참고목소리 폴더를 다시 읽어 목소리 목록 갱신 (선택 값은 가능하면 유지)."""
+    def refresh_voices(lang_label, cur_voice, cur_voice2, *slot_vals):
+        """참고목소리 폴더를 다시 읽어 모든 목소리 드롭다운 갱신 (선택 값은 가능하면 유지)."""
         voices = core.voices_for(core.LANGS[lang_label]["code"])
         keep = cur_voice if cur_voice in voices else core.LANGS[lang_label]["default_voice"]
         keep2 = cur_voice2 if cur_voice2 in voices else _second_voice(voices)
-        return gr.update(choices=voices, value=keep), gr.update(choices=voices, value=keep2)
+        slot_upd = [gr.update(choices=voices, value=(v if v in voices else None))
+                    for v in slot_vals]
+        return [gr.update(choices=voices, value=keep),
+                gr.update(choices=voices, value=keep2)] + slot_upd
 
-    refresh_btn.click(refresh_voices, inputs=[lang, voice, voice2], outputs=[voice, voice2])
+    refresh_btn.click(refresh_voices, inputs=[lang, voice, voice2] + spk_voices,
+                      outputs=[voice, voice2] + spk_voices)
+
+    def slot_preview(lang_label, slot_voice, speed_val, emotion_val, pace_val):
+        """화자 슬롯의 목소리를 짧은 샘플로 미리듣기."""
+        if not slot_voice:
+            raise gr.Error("이 화자의 목소리를 먼저 골라 주세요.")
+        return preview(lang_label, slot_voice, speed_val, False, None, 0.5,
+                       emotion_val, pace_val)
+
+    for _b, _v in zip(spk_btns, spk_voices):
+        _b.click(slot_preview, inputs=[lang, _v, speed, emotion, pace],
+                 outputs=preview_audio)
+
+    _NAME_PREFIX = re.compile(r"^\s*([^\s:：][^:：]{0,19}?)\s*[:：]")
+
+    def detect_speakers(script, lang_label, *slots):
+        """대본에서 '이름:' 접두사를 찾아 빈 슬롯에 이름을 채우고, 목소리도 자동 제안."""
+        names = [(_n or "").strip() for _n in slots[0:4]]
+        voices_sel = list(slots[4:8])
+        seen = {n for n in names if n}
+        found = []
+        for line in (script or "").splitlines():
+            m = _NAME_PREFIX.match(line)
+            if not m:
+                continue
+            nm = m.group(1).strip()
+            if nm and nm != core.RESET_NAME and nm not in seen:
+                seen.add(nm)
+                found.append(nm)
+        all_voices = core.voices_for(core.LANGS[lang_label]["code"])
+        avail = [v for v in all_voices if v not in {v for v in voices_sel if v}]
+        out, fi = [], 0
+        for i in range(4):
+            nm, vv = names[i], voices_sel[i]
+            if not nm and fi < len(found):
+                nm = found[fi]
+                fi += 1
+                if not vv and avail:
+                    vv = avail.pop(0)
+            out.append(gr.update(value=nm))
+            out.append(gr.update(value=vv))
+        return out
+
+    detect_btn.click(detect_speakers, inputs=[text, lang] + spk_names + spk_voices,
+                     outputs=[x for pair in zip(spk_names, spk_voices) for x in pair])
     preview_btn.click(preview, inputs=[lang, voice, speed, mix_on, voice2, mix_ratio, emotion, pace],
                       outputs=preview_audio)
     browse_btn.click(pick_folder, inputs=folder, outputs=folder)
@@ -629,7 +715,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
     btn.click(generate,
               inputs=[lang, voice, speed, text, upload, filename, folder, fmt, mix_on, voice2,
                       mix_ratio, add_ts, srt_on, gap_sec, norm_mode, replace_rules, trim_on, scene_split,
-                      autosave, dlg_on, dlg_map, srt_max, emotion, pace],
+                      autosave, dlg_on] + spk_names + spk_voices + [srt_max, emotion, pace],
               outputs=[audio_out, status, last_saved, pending_state],
               show_progress_on=audio_out).then(
               update_recent, inputs=[last_saved, recent_state], outputs=[recent_html, recent_state])

@@ -175,20 +175,18 @@ def synthesize_segments(text, lang_code, voice, speed=1.0, gap_sec=0.0, voice_ma
                     f"화자 '{name}'의 목소리 '{v}'가 현재 언어에 없습니다. "
                     f"가능한 목소리: {', '.join(valid)}")
     gap_len = int(sr * max(0.0, gap_sec))
+    lines = [ln.strip() for ln in re.split(r"\n+", text) if ln.strip()]
+    if voice_map:       # 대화 모드: 화자 유지(sticky) 규칙으로 줄마다 목소리 배정
+        assigned = assign_line_voices(lines, voice_map)
+    else:
+        assigned = [(None, ln) for ln in lines]
     parts, segments, cursor, first = [], [], 0.0, True
-    for raw in re.split(r"\n+", text):
-        line = raw.strip()
-        if not line:
-            continue
+    for line_voice_name, spoken in assigned:
         if not first and gap_len > 0:           # 첫 줄 앞엔 무음 없음
             parts.append(np.zeros(gap_len, dtype="float32"))
             cursor += gap_len / sr
         first = False
-        line_voice, spoken = voice, line
-        if voice_map:
-            mv, rest = match_speaker(line, voice_map)
-            if mv is not None:
-                line_voice, spoken = mv, rest
+        line_voice = voice if line_voice_name is None else line_voice_name
         seg_start, seg_end = None, cursor
         pieces = split_pause_tags(spoken)
         for i, (kind, val) in enumerate(pieces):
@@ -309,7 +307,10 @@ def strip_pause_tags(line):
     return re.sub(r"\s+", " ", _PAUSE_TAG.sub(" ", line)).strip()
 
 
-# --- 대화 모드: '이름=목소리' 매핑을 등록하면 '이름:' 줄을 그 목소리로 읽는다 ---
+# --- 대화 모드: 등록된 '이름:' 줄에서 화자가 시작되고 다음 표시까지 유지된다 ---
+
+RESET_NAME = "기본"      # '기본:' = 기본 목소리(내레이션)로 복귀하는 예약어
+
 
 def parse_voice_map(rules):
     """화자 지정 텍스트('이름=목소리' 줄들) -> dict. 형식 오류는 ValueError."""
@@ -324,8 +325,33 @@ def parse_voice_map(rules):
         name, v = name.strip(), v.strip()
         if not name or not v:
             raise ValueError(f"화자 지정 형식이 잘못됐습니다: '{ln}' (예: A=af_heart)")
+        if name == RESET_NAME:
+            raise ValueError(f"'{RESET_NAME}'은 기본 목소리 복귀용 예약어라 화자 이름으로 쓸 수 없습니다.")
         vmap[name] = v
     return vmap
+
+
+def assign_line_voices(lines, voice_map):
+    """대화 모드: 각 줄에 (목소리 또는 None, 말할 내용) 배정. None = 기본 목소리.
+
+    등록된 '이름:' 이 나온 줄부터 그 목소리가 다음 화자 표시까지 유지되고(sticky),
+    '기본:' 은 기본 목소리로 복귀한다('기본:'만 있는 줄은 통째로 생략).
+    미등록 접두사('참고:' 등)는 지우지 않고 현재 화자가 그대로 읽는다."""
+    out, cur = [], None
+    for line in lines:
+        m = re.match(re.escape(RESET_NAME) + r"\s*[:：]\s*(.*)$", line.lstrip())
+        if m:
+            cur = None
+            rest = m.group(1).strip()
+            if rest:
+                out.append((None, rest))
+            continue
+        v, spoken = match_speaker(line, voice_map or {})
+        if v is not None:
+            cur = v
+            line = spoken
+        out.append((cur, line))
+    return out
 
 
 def match_speaker(line, voice_map):

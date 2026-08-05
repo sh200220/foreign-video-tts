@@ -233,6 +233,41 @@ def test_match_speaker():
     assert core.match_speaker("콜론 없는 줄", vm) == (None, "콜론 없는 줄")
 
 
+def test_parse_voice_map_reserved_name_raises():
+    try:
+        core.parse_voice_map("기본=af_heart")
+        assert False, "'기본'은 예약어라 ValueError 여야 함"
+    except ValueError as e:
+        assert "기본" in str(e)
+
+
+def test_assign_line_voices_sticky():
+    vm = {"민수": "am_adam", "지혜": "af_heart"}
+    lines = ["오프닝 내레이션.",            # 표시 전 -> 기본(None)
+             "민수: 안녕하세요.",           # 민수 시작
+             "이어지는 두 번째 줄.",         # 민수 유지 (sticky)
+             "지혜: 반가워요.",             # 지혜로 전환
+             "참고: 미등록 접두사는 그대로",   # 지혜가 통째로 읽음
+             "기본: 다시 내레이션.",         # 기본 복귀
+             "마지막 줄."]                  # 기본 유지
+    out = core.assign_line_voices(lines, vm)
+    assert [v for v, _ in out] == [None, "am_adam", "am_adam", "af_heart",
+                                   "af_heart", None, None], out
+    assert out[1][1] == "안녕하세요."                       # 접두사 제거
+    assert out[4][1] == "참고: 미등록 접두사는 그대로"        # 미등록은 내용 유지
+    assert out[5][1] == "다시 내레이션."                    # '기본:' 접두사 제거
+
+
+def test_assign_line_voices_reset_only_line_dropped():
+    out = core.assign_line_voices(["민수: 대사.", "기본:", "내레이션."], {"민수": "am_adam"})
+    assert out == [("am_adam", "대사."), (None, "내레이션.")], "빈 '기본:' 줄은 사라져야 함"
+
+
+def test_assign_line_voices_no_map():
+    out = core.assign_line_voices(["그냥 줄"], {})
+    assert out == [(None, "그냥 줄")]
+
+
 # ---------------- 고품질(Chatterbox) 모드 ----------------
 
 def test_chatterbox_langs_registered():
