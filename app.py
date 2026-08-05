@@ -670,7 +670,7 @@ with gr.Blocks(title="외국어 영상 TTS") as demo:
                         "(아래 ‘파일 이름’ 칸은 무시).", elem_classes="hint")
             upload = gr.File(file_count="multiple", file_types=[".txt"], elem_classes="upload",
                              label="텍스트 파일(.txt) — 여러 개 선택 가능")
-        with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 (선택)", open=False):
+        with gr.Accordion("추가 옵션 — 발음 교정 · 문단 사이 쉼 · 테이크 수 (선택)", open=False):
             replace_rules = gr.Textbox(value=INIT_REPLACE, lines=3,
                                        label="발음 교정 (한 줄에 하나: 원문=읽을말) — 언어별로 따로 저장돼요",
                                        info="읽을말은 그 목소리의 언어로 적으세요 — 영어=영어 철자, "
